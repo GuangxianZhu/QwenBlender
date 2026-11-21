@@ -1,0 +1,47 @@
+{
+  "title": "齿轮为什么能减速",
+  "subtitle": "20 齿带 40 齿：转速减半，力矩加倍",
+  "params": [
+    {"id": "rpm", "label": "小齿轮转速", "min": 0, "max": 60, "value": 20, "step": 1, "unit": "转/分"}
+  ],
+  "steps": [
+    {
+      "title": "1 两个齿轮",
+      "text": "橙色小齿轮 **20 齿**，蓝色大齿轮 **40 齿**，各套在一根轴上。\n两根轴的距离固定是 60 mm，齿正好咬在一起。",
+      "view": {"az": 20, "el": 40}
+    },
+    {
+      "title": "2 拆开看",
+      "text": "从下到上：底板、两根轴、两个垫套、两个齿轮。\n垫套把齿轮垫高 4 mm，转起来不蹭底板。",
+      "view": {"az": 25, "el": 15},
+      "explode": 1,
+      "labels": [{"part": "GearA"}, {"part": "GearB"}, {"part": "SpacerA", "text": "垫套"}, {"part": "ShaftB", "text": "轴"}, {"part": "Base"}]
+    },
+    {
+      "title": "3 转起来",
+      "text": "小齿轮每转过 1 个齿，就推着大齿轮也转过 1 个齿。\n小齿轮转一圈是 20 个齿，大齿轮 40 个齿才一圈，所以大齿轮只转了**半圈**，方向相反。",
+      "view": "top",
+      "anim": [
+        {"part": "GearA", "type": "spin", "axis": "z", "speed": "rpm * 6"},
+        {"part": "GearB", "type": "spin", "axis": "z", "speed": "-rpm * 6 * 20 / 40"}
+      ],
+      "readouts": [
+        {"label": "小齿轮", "expr": "rpm", "unit": "转/分", "digits": 0},
+        {"label": "大齿轮", "expr": "rpm * 20 / 40", "unit": "转/分", "digits": 1}
+      ]
+    },
+    {
+      "title": "4 慢下来换来什么",
+      "text": "两个齿轮在接触点上的推力一样大，但大齿轮的半径是 2 倍。\n**力矩 = 力 × 半径**，所以大齿轮轴上的力矩是小齿轮的 **2 倍**。转速减半，力矩加倍。",
+      "view": {"az": 15, "el": 55, "focus": "GearB", "zoom": 0.6},
+      "highlight": ["GearB"],
+      "anim": [
+        {"part": "GearA", "type": "spin", "axis": "z", "speed": "rpm * 6"},
+        {"part": "GearB", "type": "spin", "axis": "z", "speed": "-rpm * 6 * 20 / 40"}
+      ],
+      "readouts": [
+        {"label": "减速比", "expr": "40 / 20", "unit": ": 1", "digits": 0}
+      ]
+    }
+  ]
+}

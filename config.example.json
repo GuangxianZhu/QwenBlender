@@ -1,0 +1,13 @@
+{
+  "model": "auto",
+  "ollama_host": "http://127.0.0.1:11434",
+  "num_ctx": 32768,
+  "think": true,
+  "temperature": 0.4,
+  "max_steps": 80,
+  "blender": "auto",
+  "render_res": 512,
+  "render_samples": 16,
+  "render_device": "cpu",
+  "browser": "auto"
+}

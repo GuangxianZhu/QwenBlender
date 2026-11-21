@@ -1,0 +1,34 @@
+{
+  "title": "法兰连接：管子是怎么接起来又不漏的",
+  "subtitle": "两个法兰 + 垫片 + 4 颗螺栓",
+  "params": [
+    {"id": "flow", "label": "流量", "min": 0, "max": 60, "value": 20, "step": 1, "unit": "升/分"}
+  ],
+  "steps": [
+    {
+      "title": "1 整体",
+      "text": "两段管子，各在管口焊了一个圆盘，叫**法兰**。\n两个法兰面对面，用 4 颗螺栓拉在一起。",
+      "view": {"az": 30, "el": 18}
+    },
+    {
+      "title": "2 拆开看",
+      "text": "关键是中间那个黑色的**垫片**。\n金属面再平也有缝，垫片是软的，被压扁以后把缝填满。",
+      "view": {"az": 30, "el": 10},
+      "explode": 1,
+      "labels": [{"part": "PipeUpper"}, {"part": "FlangeUpper"}, {"part": "Gasket"}, {"part": "FlangeLower"}, {"part": "PipeLower"}, {"part": "Bolt1", "text": "螺栓 ×4"}, {"part": "Nut1", "text": "螺母 ×4"}]
+    },
+    {
+      "title": "3 剖开看",
+      "text": "螺栓把两个法兰往中间拉，垫片被夹在当中。\n管子内径、法兰孔、垫片孔都是 28 mm，对齐以后里面是一条直通的通道。",
+      "view": "front",
+      "section": {"axis": "y", "pos": 0.5},
+      "highlight": ["Gasket", "FlangeUpper", "FlangeLower"]
+    },
+    {
+      "title": "4 水怎么流",
+      "text": "水从下面进来，穿过法兰，在弯头处拐 90° 向右流走。\n拖滑条改流量：管子粗细不变，流量越大，水流得越快。",
+      "view": {"az": 20, "el": 12},
+      "ghost": ["PipeLower", "PipeUpper", "FlangeLower", "FlangeUpper", "Gasket"]
+    }
+  ]
+}

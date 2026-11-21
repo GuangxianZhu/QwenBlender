@@ -1,0 +1,47 @@
+{
+  "title": "螺栓连接是怎么夹紧的",
+  "subtitle": "M8 螺栓 + 垫圈 + 螺母，夹住两块板",
+  "params": [
+    {"id": "turns", "label": "拧松圈数", "min": 0, "max": 6, "value": 4, "step": 0.5, "unit": "圈"}
+  ],
+  "steps": [
+    {
+      "title": "1 整体",
+      "text": "两块板叠在一起，一根 **M8 螺栓**从上往下穿过，下面用**螺母**拧紧。\n螺栓头和螺母下面各垫一个垫圈。",
+      "view": "iso"
+    },
+    {
+      "title": "2 拆开看",
+      "text": "一共 6 个零件。从上到下：螺栓、上垫圈、上板、下板、下垫圈、螺母。\n点画面里的零件可以看它的作用。",
+      "view": {"az": 30, "el": 12},
+      "explode": 1,
+      "labels": [{"part": "Bolt"}, {"part": "WasherTop"}, {"part": "PlateUpper"}, {"part": "PlateLower"}, {"part": "WasherBottom"}, {"part": "Nut"}]
+    },
+    {
+      "title": "3 剖开看里面",
+      "text": "板上的孔是 **Φ9**，比螺栓大 1 mm，所以螺栓的杆并不贴着孔壁。\n真正起作用的是螺纹：螺母的牙和螺栓的牙咬在一起。",
+      "view": "right",
+      "section": {"axis": "x", "pos": 0.5},
+      "highlight": ["Bolt", "Nut"]
+    },
+    {
+      "title": "4 拧一圈走多远",
+      "text": "M8 粗牙的螺距是 **1.25 mm**：螺母每转一圈，沿螺栓移动 1.25 mm。\n拖下面的滑条改圈数，看螺母退出多远。",
+      "view": {"az": 25, "el": -18, "focus": "Nut", "zoom": 0.55},
+      "ghost": ["PlateLower", "PlateUpper"],
+      "anim": [
+        {"part": "Nut", "type": "screw", "axis": "-z", "turns": "turns", "pitch": 1.25, "time": 3, "loop": "pingpong"}
+      ],
+      "readouts": [
+        {"label": "螺母移动距离", "expr": "turns * 1.25", "unit": "mm", "digits": 2}
+      ]
+    },
+    {
+      "title": "5 为什么能夹紧",
+      "text": "螺母顶到下垫圈以后再拧，螺栓被**拉长**一点点，像一根很硬的弹簧。\n它想缩回去，于是把两块板死死压在一起。板之间的摩擦力挡住横向的力。",
+      "view": "front",
+      "highlight": ["Bolt"],
+      "anim": [{"part": "Bolt", "type": "blink", "time": 1.2}]
+    }
+  ]
+}

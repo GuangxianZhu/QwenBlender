@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__QB_TITLE__</title>
+<style>
+:root{
+  --bg:#e7eaee; --ink:#15181d; --sub:#5b6370; --line:#d5dae1; --panel:#fbfcfd;
+  --accent:#1f5fbf; --accent-soft:#e3edfb; --warn:#b3261e; --r:10px;
+  --font:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font-family:var(--font);color:var(--ink);background:var(--bg);overflow:hidden;-webkit-text-size-adjust:100%}
+#app{position:fixed;inset:0;display:grid;grid-template-rows:minmax(0,1fr) auto}
+#stage{position:relative;min-height:0;background:radial-gradient(120% 90% at 50% 20%,#f6f8fa 0%,#e4e8ed 60%,#d6dbe2 100%)}
+#c{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
+#hd{position:absolute;left:14px;top:12px;right:14px;pointer-events:none}
+#hd h1{font-size:17px;line-height:1.3;margin:0;font-weight:650;letter-spacing:.01em}
+#hd p{font-size:12.5px;color:var(--sub);margin:3px 0 0}
+#labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.lbl{position:absolute;transform:translate(-50%,-135%);background:rgba(21,24,29,.86);color:#fff;font-size:12px;
+  padding:3px 8px;border-radius:6px;white-space:nowrap}
+.lbl::after{content:"";position:absolute;left:50%;top:100%;width:1px;height:9px;background:rgba(21,24,29,.7)}
+#card{position:absolute;left:12px;bottom:12px;max-width:min(320px,calc(100% - 24px));background:rgba(251,252,253,.95);
+  border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;font-size:13px;line-height:1.55;display:none}
+#card b{font-size:14px}
+#card small{color:var(--sub);font-family:var(--mono);font-size:11.5px;margin-left:6px}
+#card .x{position:absolute;right:4px;top:2px;border:0;background:none;font-size:18px;color:var(--sub);padding:6px 8px;cursor:pointer}
+#panel{background:var(--panel);border-top:1px solid var(--line);display:flex;flex-direction:column;max-height:46vh;min-height:0}
+#tabs{display:flex;border-bottom:1px solid var(--line);flex:none}
+#tabs button{flex:1;border:0;background:none;font:inherit;font-size:14px;padding:11px 4px;color:var(--sub);cursor:pointer;
+  border-bottom:2px solid transparent;min-height:44px}
+#tabs button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+.tab{display:none;padding:12px 14px 16px;overflow:auto;min-height:0;-webkit-overflow-scrolling:touch}
+.tab.on{display:block}
+.stepnav{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.stepnav button{border:1px solid var(--line);background:#fff;border-radius:8px;min-width:44px;min-height:40px;font-size:16px;cursor:pointer;color:var(--ink)}
+.stepnav button:disabled{opacity:.35;cursor:default}
+.stepnav .t{flex:1;font-weight:650;font-size:15px;line-height:1.35}
+.stepnav .n{font-family:var(--mono);font-size:12px;color:var(--sub);font-variant-numeric:tabular-nums}
+#steptext{font-size:14px;line-height:1.7;color:#262b33;overflow-wrap:anywhere}
+#steptext b{color:var(--ink)}
+.dots{display:flex;gap:5px;flex-wrap:wrap;margin:10px 0 0}
+.dots button{width:22px;height:6px;border-radius:3px;border:0;background:var(--line);padding:0;cursor:pointer}
+.dots button.on{background:var(--accent)}
+.param{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;margin-top:12px;font-size:13px}
+.param output{font-family:var(--mono);font-variant-numeric:tabular-nums;min-width:74px;text-align:right}
+input[type=range]{width:100%;accent-color:var(--accent);min-height:28px}
+.readouts{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-top:12px}
+.ro{background:var(--accent-soft);border-radius:8px;padding:7px 10px}
+.ro span{display:block;font-size:11.5px;color:var(--sub)}
+.ro b{font-family:var(--mono);font-size:15px;font-variant-numeric:tabular-nums}
+#partlist{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+#partlist li{border:1px solid var(--line);border-radius:8px;padding:9px 11px;cursor:pointer;background:#fff;font-size:14px}
+#partlist li.on{border-color:var(--accent);background:var(--accent-soft)}
+#partlist li small{color:var(--sub);font-family:var(--mono);font-size:11.5px;margin-left:6px}
+#partlist li p{margin:5px 0 0;font-size:13px;line-height:1.6;color:#39404a;display:none}
+#partlist li.on p{display:block}
+.row{display:flex;align-items:center;gap:10px;font-size:13.5px}
+.row + .row{margin-top:10px}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:#fff;font:inherit;font-size:13px;padding:8px 13px;cursor:pointer;min-height:40px;color:var(--ink)}
+.seg button + button{border-left:1px solid var(--line)}
+.seg button.on{background:var(--accent);color:#fff}
+.hint{font-size:12px;color:var(--sub);margin-top:10px;line-height:1.6}
+#err{position:absolute;left:12px;right:12px;top:58px;background:#fff4f3;border:1px solid #f0b8b3;color:var(--warn);
+  border-radius:8px;padding:8px 10px;font-size:12.5px;font-family:var(--mono);white-space:pre-wrap;display:none;max-height:40%;overflow:auto}
+button:focus-visible,li:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (min-width:900px){
+  #app{grid-template-rows:none;grid-template-columns:minmax(0,1fr) 392px}
+  #panel{max-height:none;border-top:0;border-left:1px solid var(--line)}
+  #hd h1{font-size:20px}
+  .tab{padding:16px 18px 20px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="c"></canvas>
+    <div id="labels"></div>
+    <div id="hd"><h1></h1><p></p></div>
+    <div id="card"></div>
+    <div id="err"></div>
+  </div>
+  <div id="panel">
+    <div id="tabs" role="tablist">
+      <button role="tab" data-tab="steps">讲解</button>
+      <button role="tab" data-tab="parts">零件</button>
+      <button role="tab" data-tab="explode">爆炸</button>
+      <button role="tab" data-tab="section">剖切</button>
+    </div>
+    <div class="tab" id="tab-steps">
+      <div class="stepnav">
+        <button id="prev" aria-label="上一步">‹</button>
+        <div class="t" id="steptitle"></div>
+        <span class="n" id="stepn"></span>
+        <button id="next" aria-label="下一步">›</button>
+      </div>
+      <div id="steptext"></div>
+      <div id="params"></div>
+      <div class="readouts" id="readouts"></div>
+      <div id="custom"></div>
+      <div class="dots" id="dots"></div>
+    </div>
+    <div class="tab" id="tab-parts"><ul id="partlist"></ul></div>
+    <div class="tab" id="tab-explode">
+      <div class="row"><span>合</span><input id="ex" type="range" min="0" max="1" step="0.01" value="0" aria-label="爆炸程度"><span>拆</span></div>
+      <p class="hint">拖动滑条把零件拆开。点画面里的零件可以看它的名字和作用。</p>
+    </div>
+    <div class="tab" id="tab-section">
+      <div class="row"><span>方向</span>
+        <div class="seg" id="secaxis"><button data-a="">关</button><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button></div>
+      </div>
+      <div class="row"><span>位置</span><input id="secpos" type="range" min="0" max="1" step="0.005" value="0.5" aria-label="剖切位置"></div>
+      <p class="hint">沿一个方向把模型切开，看里面的结构。</p>
+    </div>
+  </div>
+</div>
+<script>/*__QB_THREE__*/</script>
+<script>window.QB_DATA = /*__QB_DATA__*/null;</script>
+<script>/*__QB_VIEWER__*/</script>
+<script>/*__QB_CUSTOM__*/</script>
+<script>QBV.start();</script>
+</body>
+</html>

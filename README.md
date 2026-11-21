@@ -1,0 +1,157 @@
+# QwenBlender
+
+给本地 Qwen（Ollama）配的一套工具，让它能自己用 Blender 建模，再做出带讲解的网页演示。
+
+思路：模型少写长代码，多调现成工具；每一步都有「尺子」和「眼睛」给它反馈。
+
+```
+任务描述 ─→ Qwen ─→ 写 model.py ─→ Blender 运行 ─→ 尺寸 / 穿模 / 悬空 / 破面 + 四视图 ─┐
+              ↑                                                                    │
+              └────────────── 看数字和图，自己改 ←──────────────────────────────────┘
+            模型没问题后 ─→ 写 demo.json ─→ 生成网页 ─→ 浏览器检查 + 截图 ─→ 自己改 ─→ 完成
+```
+
+## 怎么用
+
+双击 `启动.bat`。它会：
+
+1. `git pull` 拉 main 的更新；
+2. 准备 Python 环境（有 uv 用 uv，没有就用系统 Python）；
+3. 打开菜单。
+
+菜单里选「新任务」，输入一句话，比如：
+
+> 做一个 M8 螺栓把两块 6 mm 的板夹在一起，带垫圈和螺母，讲清楚它为什么能夹紧
+
+做完会自动打开网页。结果在 `jobs/时间_任务名/out/`：
+
+| 文件 | 内容 |
+|---|---|
+| `index.html` | 网页演示，单文件，离线能开 |
+| `model.glb` | 模型（单位是米，零件名和说明都在里面） |
+| `model.blend` | Blender 工程 |
+| `sheet.png` | 四视图 |
+
+菜单里的「自检」不需要 Qwen：把三个范例跑一遍，确认 Blender 和浏览器这条链路在这台电脑上是通的。第一次用先跑它。
+
+需要：Ollama（里面有带 tools 和 vision 能力的 qwen 模型）、Blender 4.2 以上、Edge 或 Chrome。
+
+## 给 Qwen 的工具
+
+| 工具 | 作用 |
+|---|---|
+| `submit_plan` | 先列零件清单，后面拿它核对有没有漏做、尺寸差多少 |
+| `write_file` / `edit_file` / `read_file` | 写和改 model.py、demo.json、custom.js。语法错、JSON 错当场拦住 |
+| `build_model` | 运行 model.py：报错带行号；每个零件的尺寸、位置、接触了谁；穿模、悬空、破面；一张四视图 |
+| `look` | 换个角度看，可以对准某个零件放大 |
+| `section` | 剖开看内部，每个零件的切面一种颜色 |
+| `measure` | 量一个零件，或两个零件之间的间隙、穿入深度、中心距 |
+| `list_parts` | 列出零件名，写网页配置前用 |
+| `build_page` | 校验 demo.json（零件名、动画字段、表达式），生成网页 |
+| `check_page` | 浏览器打开：控制台报错、每一步能不能跑、动画动没动、手机上溢不溢出，返回截图 |
+| `lib_help` | 查零件库函数的写法 |
+| `search_examples` | 搜范例代码 |
+| `search_bpy` | 查本机 Blender 版本的 API |
+| `finish` | 还有没修的问题时会被拒绝 |
+
+## 零件库 qblib
+
+`blender/qblib.py`，model.py 里 `from qblib import *` 就能用。单位毫米，Z 朝上。
+
+- 基本体：`box` `rounded_box` `cylinder` `cone` `tube` `sphere` `torus` `prism` `extrude` `revolve` `pipe` `spring`
+- 机械件：`hex_bolt` `socket_screw` `nut` `screw_on` `washer` `threaded_rod` `spur_gear` `bearing` `flange` `l_bracket`
+- 加工：`union` `cut` `intersect` `hole` `holes_circle` `bevel` `chamfer`
+- 摆放：`at` `move` `rot` `rot_about` `stack` `beside` `center_on` `copy` `mirror_copy` `array_circular` `array_linear` `join`
+- 信息：`part` `mat` `color` `bbox` `allow_overlap` `allow_float`
+
+螺栓和螺母带真螺纹，`screw_on(螺母, 螺栓, grip=夹紧厚度)` 会把牙对上。
+
+完整说明：`python -m qb help`，或者 `python -m qb help hex_bolt`。
+
+## 网页演示
+
+页面骨架是固定的（`web/template.html` + `web/viewer.js`）：讲解、零件、爆炸、剖切四个标签，手机和电脑都能用。
+Qwen 只写一份 `demo.json`：讲解步骤、视角、高亮、标签、动画、滑条、读数。写法见 [docs/demo_schema.md](docs/demo_schema.md)。
+
+demo.json 做不到的效果（按公式移动零件、画箭头）再写 `custom.js`，接口见 [docs/custom_api.md](docs/custom_api.md)。
+
+## 范例
+
+`examples/` 里有三个完整任务，也是 `search_examples` 的检索内容：
+
+| 目录 | 内容 |
+|---|---|
+| `bolt_joint` | 螺栓连接：真螺纹、剖切、拧螺母的动画和圈数滑条 |
+| `gear_pair` | 齿轮减速：渐开线齿轮、转速滑条、联动读数 |
+| `pipe_flange` | 法兰连接：弯管、圆周螺栓，custom.js 画流动箭头和流速 |
+
+`examples/snippets/` 是单项写法：带孔的板、圆周阵列、轴和轴承对位、自定义轮廓、车削体、布尔挖槽、镜像阵列、直接用 bmesh。
+
+## 配置
+
+可选。把 `config.example.json` 复制成 `config.json` 再改：
+
+| 项 | 默认 | 说明 |
+|---|---|---|
+| `model` | `auto` | 自动在 Ollama 里找 qwen，优先 q8。也可以写死，如 `qwen3.8:27b-q8_0` |
+| `num_ctx` | 32768 | 上下文长度 |
+| `think` | true | 是否开思考 |
+| `max_steps` | 80 | 最多跑多少轮 |
+| `blender` | `auto` | 自动找 blender.exe；找不到就写完整路径 |
+| `render_device` | `cpu` | 四视图用 CPU 还是 `gpu` 渲染 |
+| `render_res` / `render_samples` | 512 / 16 | 四视图每格的像素和采样数 |
+| `browser` | `auto` | 先找 Edge，再找 Chrome；也可以写 exe 路径 |
+
+## 命令行
+
+每个工具也能单独运行，不经过 Qwen。其他编程助手可以直接调：
+
+```
+python -m qb build   <任务目录>           运行 model.py，打印报告，出四视图
+python -m qb look    <任务目录> 30 20 Nut
+python -m qb section <任务目录> x 0
+python -m qb measure <任务目录> Bolt Nut
+python -m qb page    <任务目录>           校验 demo.json，生成网页
+python -m qb check   <任务目录>           浏览器检查
+python -m qb help [函数名|demo|custom]
+python -m qb new "任务描述"               让 Qwen 做（加 --no-page 只要模型）
+python -m qb fix <任务目录> "修改意见"
+```
+
+任务目录就是一个放着 `model.py`（和 `demo.json`）的文件夹。
+
+## 测试
+
+```
+python tests/test_lib.py          零件库：每个函数的结果都是封闭实体；尺寸、穿模、螺纹配合、报错行号
+python tests/test_agent_fake.py   工具循环：用按剧本回复的假 Ollama 走完整条链路
+python -m qb selftest             三个范例：建模 → 网页 → 浏览器检查
+```
+
+## 验证情况
+
+已验证：
+
+- 零件库和检查，在 Blender 5.3 和 4.5 LTS 下测试通过。
+- 三个范例的建模、网页生成、无头 Chrome 检查（电脑和手机两种尺寸）通过。
+- 工具循环用假 Ollama 走通：催促、拦截、报错提示、图片回传、finish 把关都按预期工作。
+
+还没验证：
+
+- 真的 Qwen 跑完整任务的效果。工具接口按 Ollama 文档的 `/api/chat` 格式写的，没有连过真模型。
+- `启动.bat` 没在 Windows 上运行过。
+- Windows 上自动找 Blender、用 Edge / Chrome 做检查。
+- `render_device: gpu`。
+
+## 目录
+
+```
+启动.bat          一键启动
+qb/               工具循环、工具实现、网页生成、浏览器检查、菜单
+blender/          qblib.py 零件库；runner.py 在 Blender 里运行、测量、渲染、导出
+web/              网页骨架（three.js r180 已打包在 vendor/ 里）
+docs/             demo.json 和 custom.js 的写法
+examples/         范例任务和单项写法
+tests/            测试
+jobs/             任务输出（不进仓库）
+```
