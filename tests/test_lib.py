@@ -170,6 +170,22 @@ def main():
     assert not r["ok"] and "ang=" in r["problems"][0], r                                  # 角度由滑条给时，把滑条扫一遍
     print("运动检查：转向、速比、连杆铰点、挡路的零件都能查出来")
 
+    # 不用 qblib、直接写 bpy 的脚本：改 location / rotation_euler、设了父子关系的，位置都要算对
+    r = build(cfg, "import bpy, bmesh\n"
+                   "def cube(name, loc, parent=None):\n"
+                   "    bm = bmesh.new(); bmesh.ops.create_cube(bm, size=10); me = bpy.data.meshes.new(name); bm.to_mesh(me)\n"
+                   "    o = bpy.data.objects.new(name, me); bpy.context.scene.collection.objects.link(o)\n"
+                   "    o.location = loc; o.parent = parent; return o\n"
+                   "a = cube('A', (100, 0, 0)); a.rotation_euler = (0, 0, 1.5707963)\nb = cube('B', (20, 0, 0), a)\n", "rawbpy")
+    p = {x["name"]: x for x in r["parts"]}
+    assert r.get("ok") and abs(p["A"]["center"][0] - 100) < 0.01, p["A"]
+    assert abs(p["B"]["center"][0] - 100) < 0.01 and abs(p["B"]["center"][1] - 20) < 0.01, p["B"]
+    raw = open(os.path.join(tempfile.gettempdir(), "qb_test_rawbpy", "out", "model.glb"), "rb").read()
+    n = int.from_bytes(raw[12:16], "little")
+    nb = [x for x in json.loads(raw[20:20 + n])["nodes"] if x.get("name") == "B"][0]["translation"]
+    assert abs(nb[0] - 100) < 0.01 and abs(abs(nb[2]) - 20) < 0.01, nb                    # 导出的网页模型里也在对的位置
+    print("直接写 bpy 的脚本：位置和父子关系都算对")
+
     # 5) 出错信息带行号
     r = build(cfg, "from qblib import *\na = box(10, 10, 10)\nb = cylinder(-5, 10)\n", "err")
     assert not r["ok"] and r["error"]["line"] == 3 and "d" in r["error"]["msg"], r

@@ -770,6 +770,13 @@ def mode_build(job, a):
     if err:
         rep["error"] = err
         return rep
+    bpy.context.view_layer.update()         # 脚本里直接改 location / rotation_euler 的，要刷新一次才会算进世界坐标
+    kids = [(o, o.matrix_world.copy()) for o in bpy.context.scene.objects if o.parent is not None]
+    for o, mw in kids:                      # 有父子关系的先拆开、位置保持不变，后面导出时每个零件要单独挂到根节点上
+        o.parent = None
+        o.matrix_world = mw
+    if kids:
+        bpy.context.view_layer.update()
     objs = part_objects()
     if not objs:
         rep["error"] = {"type": "Empty", "msg": "脚本跑完了，但场景里一个零件都没有", "line": None, "src": ""}
