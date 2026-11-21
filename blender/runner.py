@@ -880,6 +880,230 @@ def mode_measure(job, a):
     return out
 
 
+# ------------------------------------------------------------------ 动起来以后的检查
+
+_AX = {"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)}
+
+
+def _axis_v(a, default="z"):
+    a = default if a is None else a
+    if isinstance(a, (list, tuple)):
+        return Vector([float(c) for c in a]).normalized()
+    k = str(a).lower().strip()
+    sign = -1.0 if k.startswith("-") else 1.0
+    return Vector(_AX[k.lstrip("+-")]) * sign
+
+
+class _Skip(Exception):
+    pass
+
+
+def _num(x, params, t):
+    if isinstance(x, (int, float)):
+        return float(x)
+    env = {k: getattr(math, k) for k in ("sin", "cos", "tan", "sqrt", "floor", "ceil", "atan", "atan2", "asin", "acos", "exp", "log", "hypot")}
+    env.update(abs=abs, min=min, max=max, pow=pow, round=round, PI=math.pi, E=math.e, t=t)
+    env.update(params)
+    try:
+        return float(eval(str(x).replace("Math.", ""), {"__builtins__": {}}, env))
+    except Exception:
+        raise _Skip("表达式 %r 没法在检查里计算" % (x,))
+
+
+def _prog(t, a):
+    tm = max(0.05, float(a.get("time") or 2))
+    pause = float(a.get("pause", 0.6))
+    t = t - float(a.get("delay") or 0)
+    if t <= 0:
+        return 0.0
+    loop = a.get("loop", "once")
+    if loop == "repeat":
+        u = min(1.0, (t % (tm + pause)) / tm)
+    elif loop == "pingpong":
+        tt = t % (2 * (tm + pause))
+        u = tt / tm if tt < tm else 1.0 if tt < tm + pause else 1 - (tt - tm - pause) / tm if tt < 2 * tm + pause else 0.0
+    else:
+        u = min(1.0, t / tm)
+    return u if a.get("ease") == "linear" else u * u * (3 - 2 * u)
+
+
+def _names(x):
+    return [] if x is None else list(x) if isinstance(x, (list, tuple)) else [x]
+
+
+def _plane(v, n):
+    return v - n * v.dot(n)
+
+
+def _sangle(u, v, n):
+    return math.atan2(n.dot(u.cross(v)), u.dot(v))
+
+
+def pose_at(anims, t, base, params):
+    """按 demo.json 的动画算出时刻 t 每个零件的位置。和 web/viewer.js 的算法一致。返回 {零件名: 4x4 矩阵}，只含动了的零件。"""
+    st = {}
+
+    def get(nm):
+        if nm not in st and nm in base:
+            st[nm] = [base[nm].translation.copy(), base[nm].to_quaternion()]
+        return st.get(nm)
+
+    def rot_about(nm, axis, rad, pivot):
+        s_ = get(nm)
+        if s_ is None:
+            return
+        q = Matrix.Rotation(rad, 4, axis).to_quaternion()
+        if pivot is not None:
+            s_[0] = pivot + q @ (s_[0] - pivot)
+        s_[1] = q @ s_[1]
+
+    def rigid(names, frm, to, q):
+        for nm in names:
+            s_ = get(nm)
+            if s_ is None:
+                continue
+            s_[0] = to + q @ (s_[0] - frm)
+            s_[1] = q @ s_[1]
+
+    for a in anims:
+        ty = a.get("type")
+        piv = Vector(a["pivot"]) if a.get("pivot") else None
+        tl = max(0.0, t - float(a.get("delay") or 0))
+        if ty == "spin":
+            rot_about(a.get("part"), _axis_v(a.get("axis")), math.radians(_num(a.get("speed", 0), params, t) * tl), piv)
+        elif ty == "turn":
+            rot_about(a.get("part"), _axis_v(a.get("axis")), math.radians(_num(a.get("by", 0), params, t) * _prog(t, a)), piv)
+        elif ty == "move":
+            s_ = get(a.get("part"))
+            if s_ is not None:
+                by = a.get("by") or [0, 0, 0]
+                s_[0] = s_[0] + Vector([_num(c, params, t) for c in by]) * _prog(t, a)
+        elif ty == "screw":
+            d, u = _axis_v(a.get("axis")), _prog(t, a)
+            turns, pitch = _num(a.get("turns", 0), params, t), _num(a.get("pitch", 0), params, t)
+            rot_about(a.get("part"), d, math.radians(360 * turns * u), piv)
+            s_ = get(a.get("part"))
+            if s_ is not None:
+                s_[0] = s_[0] + d * pitch * turns * u
+        elif ty in ("crank_slider", "four_bar"):
+            n = _axis_v(a.get("axis"), "y")
+            th = math.radians(_num(a["angle"], params, t) if a.get("angle") is not None else _num(a.get("speed", 0), params, t) * tl)
+            qc = Matrix.Rotation(th, 4, n).to_quaternion()
+            if ty == "crank_slider":
+                o, p0, s0 = Vector(a["center"]), Vector(a["crank_pin"]), Vector(a["slider_pin"])
+                d = _plane(_axis_v(a.get("slide"), "z"), n).normalized()
+                pp = o + qc @ (p0 - o)
+                ln = _plane(s0 - p0, n).length
+                w = _plane(s0 - pp, n)
+                b = d.dot(w)
+                disc = max(b * b - w.length_squared + ln * ln, 0.0)
+                b0 = d.dot(_plane(s0 - p0, n))
+                sl = -b + (1 if b0 >= 0 else -1) * math.sqrt(disc)
+                sp = s0 + d * sl
+                rigid(_names(a.get("crank")), o, o, qc)
+                qr = Matrix.Rotation(_sangle(_plane(s0 - p0, n), _plane(sp - pp, n), n), 4, n).to_quaternion()
+                rigid(_names(a.get("rod")), p0, pp, qr)
+                for nm in _names(a.get("slider")):
+                    s_ = get(nm)
+                    if s_ is not None:
+                        s_[0] = s_[0] + d * sl
+            else:
+                A, B0, C0, D = (Vector(a[k]) for k in "abcd")
+                B = A + qc @ (B0 - A)
+                r2, r3 = _plane(C0 - B0, n).length, _plane(C0 - D, n).length
+                bd = _plane(D - B, n)
+                dist = min(max(bd.length, abs(r2 - r3) + 1e-6), r2 + r3 - 1e-6)
+                x = (dist * dist + r2 * r2 - r3 * r3) / (2 * dist)
+                h = math.sqrt(max(r2 * r2 - x * x, 0.0))
+                e1 = bd.normalized()
+                e2 = n.cross(e1)
+                side = 1 if n.dot(_plane(D - B0, n).cross(_plane(C0 - B0, n))) >= 0 else -1
+                C = B + e1 * x + e2 * (side * h)
+                C = C + n * (n.dot(C0) - n.dot(C))
+                rigid(_names(a.get("crank")), A, A, qc)
+                rigid(_names(a.get("coupler")), B0, B,
+                      Matrix.Rotation(_sangle(_plane(C0 - B0, n), _plane(C - B, n), n), 4, n).to_quaternion())
+                rigid(_names(a.get("rocker")), D, D,
+                      Matrix.Rotation(_sangle(_plane(C0 - D, n), _plane(C - D, n), n), 4, n).to_quaternion())
+    return {nm: Matrix.Translation(v[0]) @ v[1].to_matrix().to_4x4() for nm, v in st.items()}
+
+
+def mode_motion(job, a):
+    """把 demo.json 里每一步的动画摆到几个时刻，看动起来以后零件会不会互相穿模。"""
+    t0 = time.time()
+    load_blend(job)
+    cfg = json.load(open(os.path.join(job, "demo.json"), encoding="utf-8-sig"))
+    objs = {o.name: o for o in part_objects()}
+    base = {n: o.matrix_world.copy() for n, o in objs.items()}
+    params = {p["id"]: float(p.get("value", 0)) for p in cfg.get("params", []) if isinstance(p, dict) and "id" in p}
+    allow = set(bpy.context.scene.get("qb_allow_overlap", []))
+    static = {n: Geo(o) for n, o in objs.items()}
+    names = sorted(objs)
+    rest = {}                                           # 静止时就穿模的那些对，前面已经报过了，这里不重复
+    for i, x in enumerate(names):
+        for y in names[i + 1:]:
+            if bbox_gap(static[x], static[y]) <= FIT and not threaded_fit(static[x], static[y]):
+                if pair_relation(static[x], static[y])[1] > TOL:
+                    rest["%s|%s" % (x, y)] = True
+    problems, notes, seen, checked = [], [], set(), 0
+    for si, step in enumerate(cfg.get("steps", [])):
+        anims = [x for x in step.get("anim", []) if isinstance(x, dict) and x.get("type") != "blink"]
+        key = json.dumps(anims, sort_keys=True, ensure_ascii=False)
+        if not anims or key in seen:
+            continue
+        seen.add(key)
+        try:
+            speeds = [abs(_num(x.get("speed", 0), params, 0.0)) for x in anims if x.get("type") in ("spin", "crank_slider", "four_bar") and x.get("angle") is None]
+            if any(v > 1e-9 for v in speeds):
+                times = [ang / max(speeds) for ang in (41, 97, 163, 229, 301, 347)]
+            else:
+                tm = max([float(x.get("time") or 2) + float(x.get("delay") or 0) for x in anims] + [0.5])
+                times = [tm * f for f in (0.25, 0.5, 0.75, 1.0)]
+            # 角度由滑条给的连杆：把那个滑条从最小扫到最大
+            swept = [p for p in cfg.get("params", []) if isinstance(p, dict) and "id" in p and any(
+                x.get("angle") is not None and re.search(r"\b%s\b" % re.escape(str(p["id"])), str(x["angle"])) for x in anims)]
+            samples = [(t, params, "%.1f 秒时" % t) for t in times]
+            for f in ((0.0, 0.2, 0.4, 0.6, 0.8, 1.0) if swept else ()):
+                pp = dict(params)
+                for p in swept:
+                    lo, hi = float(p.get("min", 0)), float(p.get("max", 1))
+                    pp[p["id"]] = lo + (hi - lo) * f
+                samples.append((times[-1], pp, "滑条 %s 时" % "、".join("%s=%g" % (p["id"], pp[p["id"]]) for p in swept)))
+            worst = {}
+            for t, par, label in samples:
+                pose = pose_at(anims, t, base, par)
+                moved = [n for n, m in pose.items() if any(abs(m[r][c] - base[n][r][c]) > 1e-7 for r in range(3) for c in range(4))]
+                if not moved:
+                    continue
+                for n in moved:
+                    objs[n].matrix_world = pose[n]
+                bpy.context.view_layer.update()
+                geo = dict(static)
+                geo.update({n: Geo(objs[n]) for n in moved})
+                for n in moved:
+                    for other in names:
+                        if other == n or (other in moved and other < n):
+                            continue
+                        k = "%s|%s" % tuple(sorted((n, other)))
+                        if k in rest or k in allow or bbox_gap(geo[n], geo[other]) > 0 or threaded_fit(geo[n], geo[other]):
+                            continue
+                        pen = pair_relation(geo[n], geo[other])[1]
+                        if pen > max(TOL, 0.15) and pen > worst.get(k, (0, 0))[0]:
+                            worst[k] = (pen, label)
+                for n in moved:
+                    objs[n].matrix_world = base[n]
+                bpy.context.view_layer.update()
+            checked += 1
+            for k, (pen, label) in sorted(worst.items(), key=lambda kv: -kv[1][0])[:6]:
+                x, y = k.split("|")
+                problems.append("第 %d 步「%s」动起来以后穿模：%s %s 和 %s 互相扎进去约 %.1f mm（静止时不穿）" % (
+                    si + 1, step.get("title", ""), label, x, y, pen))
+        except _Skip as e:
+            notes.append("第 %d 步没有做运动检查：%s" % (si + 1, e))
+    return {"ok": not problems, "problems": problems, "notes": notes, "checked_steps": checked,
+            "seconds": round(time.time() - t0, 1)}
+
+
 def mode_index(path):
     """导出当前 Blender 版本的 API 索引，给 search_bpy 用。"""
     items = []
@@ -978,6 +1202,8 @@ def main():
             rep = mode_section(target, a)
         elif mode == "measure":
             rep = mode_measure(target, a)
+        elif mode == "motion":
+            rep = mode_motion(target, a)
         elif mode == "index":
             rep = mode_index(target)
         else:
@@ -991,7 +1217,8 @@ def main():
     if mode != "index":
         out = os.path.join(target, "out")
         os.makedirs(out, exist_ok=True)
-        name = {"build": "report.json", "view": "view.json", "section": "section.json", "measure": "measure.json"}[mode]
+        name = {"build": "report.json", "view": "view.json", "section": "section.json", "measure": "measure.json",
+                "motion": "motion.json"}[mode]
         json.dump(rep, open(os.path.join(out, name), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print("QB_RESULT " + json.dumps(rep, ensure_ascii=False))
 

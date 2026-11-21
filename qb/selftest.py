@@ -5,7 +5,7 @@ import os
 import shutil
 import time
 
-from . import blender, browser, config, page, tools
+from . import blender, config, page, tools
 from .config import ROOT
 
 
@@ -46,9 +46,12 @@ def main(cfg=None, names=None, keep=True):
             ok_all = False
             continue
         t = time.time()
-        c = browser.check(job_dir, cfg)
-        print("[%s] 浏览器检查 %s（%.0f 秒）%s" % (name, "通过" if c["ok"] else "有问题", time.time() - t,
-                                             "" if c["ok"] else "：" + "；".join(c["errors"])))
+        job.state["page"] = {"ok": True, "errors": []}
+        job.state["page_stale"] = False
+        text, _ = tools.call(job, "check_page", {})
+        c = job.state["check"]
+        print("[%s] 浏览器和运动检查 %s（%.0f 秒）%s" % (name, "通过" if c["ok"] else "有问题", time.time() - t,
+                                               "" if c["ok"] else "：" + "；".join(c["errors"])))
         for w in c["warnings"]:
             print("  提醒：" + w)
         ok_all = ok_all and c["ok"]

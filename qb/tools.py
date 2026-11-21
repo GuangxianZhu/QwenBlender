@@ -47,7 +47,7 @@ SPECS = [
         {"a": S, "b": S}, ["a"]),
     _fn("list_parts", "列出上次构建出来的零件：英文名、中文名、尺寸、位置。写 demo.json 之前先看这个，零件名必须一字不差。"),
     _fn("build_page", "校验 demo.json（零件名、动画字段、表达式）并生成网页 out/index.html。有错会逐条指出来。"),
-    _fn("check_page", "用浏览器打开网页检查：控制台报错、每一步是否正常、动画有没有动、手机上是否溢出。返回电脑和手机的截图。"),
+    _fn("check_page", "检查网页：控制台报错、每一步是否正常、动画有没有动、手机上是否溢出；还会把每一步的动画摆到几个时刻，看零件动起来以后会不会互相穿模（转向反了、速比不对都能查出来）。返回电脑和手机的截图。"),
     _fn("finish", "全部做完后调用。模型和网页还有没解决的问题时会被拒绝；确实解决不了的，在 unresolved 里如实写明。",
         {"summary": dict(S, description="做了什么，几句话"),
          "unresolved": dict(S, description="还没解决的问题。没有就留空")}, ["summary"]),
@@ -402,6 +402,19 @@ def t_check_page(job, a):
     if job.state.get("page_stale") or not (job.state.get("page") or {}).get("ok"):
         return "网页还没生成，或者文件改过之后没有重新生成。先 build_page", []
     r = browser.check(job.path, job.cfg)
+    # 运动检查：把每一步的动画摆到几个时刻，看零件动起来以后会不会互相穿模（转向反了、速比不对、连杆撞到别的零件）
+    cfg_demo, _ = page.load_json(job.file("demo.json"))
+    if cfg_demo and any(isinstance(s_, dict) and s_.get("anim") for s_ in cfg_demo.get("steps", [])):
+        mo = blender.run(job.cfg, "motion", job.path)
+        if mo.get("problems"):
+            r["errors"] = r["errors"] + mo["problems"] + [
+                "（齿轮、蜗轮蜗杆、皮带轮这类：多半是转向反了或者速比不对，把其中一个的 speed 取负，或者核对齿数比；"
+                "连杆这类：检查 center / crank_pin / slider_pin 这些点是不是模型里铰点的真实位置，或者给被撞的零件开槽让路）"]
+            r["ok"] = False
+        for n_ in mo.get("notes", []):
+            r["warnings"].append(n_)
+        if not mo.get("ok") and mo.get("error"):
+            r["warnings"].append("运动检查没跑起来：%s" % mo["error"].get("msg", ""))
     job.state["check"] = {"ok": r["ok"], "errors": r["errors"], "warnings": r["warnings"]}
     lines = []
     info = r.get("info") or {}

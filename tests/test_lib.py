@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """零件库测试：python tests/test_lib.py（需要能找到 Blender，或者当前 Python 装了 bpy）。"""
+import json
 import os
 import shutil
 import sys
@@ -128,6 +129,46 @@ def main():
                    "pin = cylinder(6, 8)\nrot(pin, 90, 0, 0)\nat(pin, 15, 4, 0)\n", "rodpin")
     assert r.get("ok") and not r["issues"], r.get("issues")
     print("转过方向的带孔零件：不误报")
+
+    # 运动检查：转向反了、速比错了、连杆撞到别的零件都要报；写对了不报
+    def motion(src, anim, name, params=None):
+        r = build(cfg, src, name)
+        assert r.get("ok") and not r["issues"], (r.get("issues"), r.get("error"))
+        d = os.path.join(tempfile.gettempdir(), "qb_test_" + name)
+        json.dump({"title": "t", "params": params or [], "steps": [{"title": "转", "text": "x", "anim": anim}]},
+                  open(os.path.join(d, "demo.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        return blender.run(cfg, "motion", d)
+
+    gears = "from qblib import *\na = part(spur_gear(2, 20, 10), 'A')\nb = part(spur_gear(2, 40, 10), 'B')\nmesh(b, a)\n"
+    spin = lambda sb: [{"part": "A", "type": "spin", "axis": "z", "speed": 60}, {"part": "B", "type": "spin", "axis": "z", "speed": sb}]
+    assert motion(gears, spin(-30), "mo_ok")["ok"]
+    r = motion(gears, spin(30), "mo_dir")
+    assert not r["ok"] and "A" in r["problems"][0] and "穿模" in r["problems"][0], r
+    assert not motion(gears, spin(-40), "mo_ratio")["ok"]
+    wsrc = ("from qblib import *\nw = part(worm(2, 60), 'W'); rot(w, 0, 90, 0); at(w, -30, 0, 40)\n"
+            "g = part(worm_wheel(2, 30, 14, bore=8), 'G'); mesh_worm(g, w)\n")
+    wspin = lambda sg: [{"part": "W", "type": "spin", "axis": "x", "speed": 360}, {"part": "G", "type": "spin", "axis": "z", "speed": sg}]
+    rr = [motion(wsrc, wspin(sg), "mo_worm%d" % i)["ok"] for i, sg in enumerate((12, -12))]
+    assert sorted(rr) == [False, True], rr                                                # 蜗轮只有一个转向是对的
+    fsrc = ("from qblib import *\n"
+            "cr = part(link_bar((0, 0, 0), (0, 0, 20), 10, 4, hole_d=5.2), 'Crank')\n"
+            "co = part(link_bar((0, 0, 20), (60, 0, 45), 10, 4, hole_d=5.2), 'Coupler'); move(co, 0, 4, 0)\n"
+            "ro = part(link_bar((70, 0, 0), (60, 0, 45), 10, 4, hole_d=5.2), 'Rocker')\n"
+            "for i, (x, z) in enumerate([(0, 20), (60, 45)]):\n"
+            "    p = part(cylinder(5, 8), 'Pin%d' % i); rot(p, 90, 0, 0); at(p, x, 6, z)\n"
+            "")
+    four = {"type": "four_bar", "crank": ["Crank", "Pin0"], "coupler": "Coupler", "rocker": ["Rocker", "Pin1"],
+            "a": [0, 0, 0], "b": [0, 0, 20], "c": [60, 0, 45], "d": [70, 0, 0], "axis": "y"}
+    r = motion(fsrc, [dict(four, speed=90)], "mo_four")
+    assert r["ok"], r                                                                     # 销子一直在孔里，杆子互相不撞
+    r = motion(fsrc + "blk = part(box(10, 4, 10), 'Block'); at(blk, 25, 0, -5)\nallow_float(blk)\n", [dict(four, speed=90)], "mo_hit")
+    assert not r["ok"] and any("Block" in x for x in r["problems"]), r                    # 路上有挡块要报
+    r = motion(fsrc, [dict(four, c=[60, 0, 30], speed=90)], "mo_wrongpt")
+    assert not r["ok"], r                                                                 # 铰点写得和模型对不上，销子会扎进杆里
+    r = motion(fsrc + "blk = part(box(10, 4, 10), 'Block'); at(blk, 25, 0, -5)\nallow_float(blk)\n", [dict(four, angle="ang")], "mo_sweep",
+               params=[{"id": "ang", "min": 0, "max": 360, "value": 0}])
+    assert not r["ok"] and "ang=" in r["problems"][0], r                                  # 角度由滑条给时，把滑条扫一遍
+    print("运动检查：转向、速比、连杆铰点、挡路的零件都能查出来")
 
     # 5) 出错信息带行号
     r = build(cfg, "from qblib import *\na = box(10, 10, 10)\nb = cylinder(-5, 10)\n", "err")

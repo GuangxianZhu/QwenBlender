@@ -16,7 +16,7 @@ SYSTEM = """你是一个机械建模助手，在用户的电脑上工作。你�
 2. 写 model.py：先写一两个零件就 build_model，看报告和四视图；对了再加下一个。不要一口气写完。
 3. 修到 build_model 的报告里没有「必须修的问题」，并且四视图看起来就是要做的东西。内部配合用 section 剖开确认。
 4. list_parts 确认零件名 → lib_help("demo") 看写法 → 写 demo.json → build_page → check_page。
-5. 修到 check_page 通过，看截图确认画面正常。
+5. 修到 check_page 通过，看截图确认画面正常。check_page 会让动画真的走几步，报「动起来以后穿模」多半是转向反了（speed 取负）或速比不对。
 6. finish。
 
 # 建模约定
