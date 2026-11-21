@@ -223,10 +223,14 @@ def bbox_gap(a, b):
     return float(np.linalg.norm(d))
 
 
+LAST_PEN_POINT = [None]      # 最近一次 pair_relation 里扎得最深的那个点（给报告用）
+
+
 def pair_relation(a, b):
     """返回 (间隙 mm, 穿入深度 mm)。间隙是表面最近距离的估计；穿入深度是一个零件的点扎进另一个内部的最大深度。"""
     gap = float("inf")
     pen = 0.0
+    LAST_PEN_POINT[0] = None
     for p_src, q in ((a, b), (b, a)):
         lo, hi = q.lo - FIT, q.hi + FIT
         for p in p_src.pts:
@@ -239,6 +243,7 @@ def pair_relation(a, b):
             if dist > TOL and q.closed and lo[0] <= p.x <= hi[0] and lo[1] <= p.y <= hi[1] \
                     and lo[2] <= p.z <= hi[2] and dist > pen and q.inside(p):
                 pen = dist
+                LAST_PEN_POINT[0] = (p.x, p.y, p.z)
     return gap, pen
 
 
@@ -344,11 +349,13 @@ def measure_all(objs, plan=None):
                 pairs.append({"a": a.name, "b": b.name, "penetration": round(pen, 2), "allowed": key in allow_ov})
                 contact[a.name].append(b.name)
                 contact[b.name].append(a.name)
+                pt = LAST_PEN_POINT[0]
+                where = "，最深的地方在 (%g, %g, %g) 附近" % tuple(round(c, 1) for c in pt) if pt else ""
                 if key not in allow_ov:
-                    issues.append("穿模：%s 和 %s 互相扎进去了，最深约 %.2f mm" % (a.name, b.name, pen))
+                    issues.append("穿模：%s 和 %s 互相扎进去了，最深约 %.2f mm%s" % (a.name, b.name, pen, where))
                 elif pen > 1.0:
-                    issues.append("穿模：%s 和 %s 用 allow_overlap 声明了重叠，但扎进去约 %.2f mm，这不是配合，是实体穿过实体。"
-                                  "给被穿过的零件用 hole() 打孔，然后删掉这条 allow_overlap" % (a.name, b.name, pen))
+                    issues.append("穿模：%s 和 %s 用 allow_overlap 声明了重叠，但扎进去约 %.2f mm%s，这不是配合，是实体穿过实体。"
+                                  "给被穿过的零件用 hole() 打孔，然后删掉这条 allow_overlap" % (a.name, b.name, pen, where))
                 else:
                     warns.append("已声明允许重叠：%s 和 %s（约 %.2f mm）" % (a.name, b.name, pen))
             elif gap <= FIT:

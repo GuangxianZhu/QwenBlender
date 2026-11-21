@@ -1281,8 +1281,8 @@ _DRILL_TWIST = Matrix.Rotation(0.3137, 4, "Z")   # 钻头转一个小角度，�
 
 def hole(obj, d, pos=(0, 0, 0), axis="z", depth=None):
     """在 obj 上打一个圆孔。d 孔径；pos 是孔口中心的世界坐标 (x, y, z)，要落在零件的表面上；
-    axis 是孔口朝哪边（钻头前进的反方向）：'z' 表示孔口朝 +Z、从上往下钻，pos 的 z 取零件顶面；
-    '-z' 表示从下往上钻，pos 的 z 取零件底面；'x' 表示孔口朝 +X。depth 不写就打通。没钻到零件会报错。"""
+    axis 是孔的方向：'z' 竖着打，'x'、'y' 横着打（带不带正负号都行，往哪边有材料就往哪边钻）。
+    depth 是孔深，不写就打通。没钻到零件会报错。"""
     _check_pos(d=d)
     p = _as_vec3(pos, "pos")
     ax = _axis(axis)
@@ -1291,25 +1291,39 @@ def hole(obj, d, pos=(0, 0, 0), axis="z", depth=None):
     if depth is None:
         c = cylinder(d, 2 * span, name=_auto_name("_drill"))
         c.matrix_world = Matrix.Translation(p - ax * span) @ _align_z_to(ax) @ _DRILL_TWIST
-    else:
-        _check_pos(depth=depth)
-        c = cylinder(d, depth + 1, name=_auto_name("_drill"))
-        c.matrix_world = Matrix.Translation(p - ax * depth) @ _align_z_to(ax) @ _DRILL_TWIST
-    _update()
+        _update()
+        cut(obj, c)
+        return obj
+    _check_pos(depth=depth)
+    want = math.pi * (d / 2) ** 2 * depth
     v0 = _volume(obj)
-    cut(obj, c)
-    if depth is not None:
-        want = math.pi * (d / 2) ** 2 * depth
-        got = v0 - _volume(obj)
-        if got < 0.3 * want:
-            k = max(range(3), key=lambda i: abs(ax[i]))
-            raise ValueError(
-                "这个孔基本没钻到材料（只去掉了应有体积的 %d%%）。孔口在 pos=(%g, %g, %g)，朝 %s，往反方向钻 %g 深；"
-                "而 %s 在 %s 方向的范围是 %g ~ %g。pos 要取孔口所在的那个表面：从上往下钻取顶面、axis='z'，"
-                "从下往上钻取底面、axis='-z'" % (
-                    round(100 * got / want), p.x, p.y, p.z, ("+" if ax[k] > 0 else "-") + "xyz"[k].upper(), depth,
-                    obj.name, "xyz"[k].upper(), bb["min"][k], bb["max"][k]))
-    return obj
+    keep = obj.data.copy()
+    got_best = 0.0
+    for direction in (ax, -ax):                     # 先按写的方向（孔口朝 axis，往反方向钻），不行就反过来
+        c = cylinder(d, depth + 1, name=_auto_name("_drill"))
+        c.matrix_world = Matrix.Translation(p - direction * depth) @ _align_z_to(direction) @ _DRILL_TWIST
+        _update()
+        try:
+            cut(obj, c)
+            got = v0 - _volume(obj)
+        except ValueError:
+            got = 0.0
+        if got >= 0.3 * want:
+            bpy.data.meshes.remove(keep)
+            return obj
+        got_best = max(got_best, got)
+        old = obj.data                              # 这个方向没钻到：恢复原样，换个方向再试
+        obj.data = keep.copy()
+        if old.users == 0:
+            bpy.data.meshes.remove(old)
+        _update()
+    bpy.data.meshes.remove(keep)
+    k = max(range(3), key=lambda i: abs(ax[i]))
+    raise ValueError(
+        "这个孔基本没钻到材料（两个方向都试了，最多只去掉应有体积的 %d%%）。孔口在 pos=(%g, %g, %g)，沿 %s 方向钻 %g 深；"
+        "而 %s 的范围是 x %g~%g  y %g~%g  z %g~%g。pos 要落在零件的表面上，孔才钻得进去" % (
+            round(100 * got_best / want), p.x, p.y, p.z, "xyz"[k].upper(), depth, obj.name,
+            bb["min"][0], bb["max"][0], bb["min"][1], bb["max"][1], bb["min"][2], bb["max"][2]))
 
 
 def holes_circle(obj, d, circle_d, n, center=(0, 0), axis="z", start_angle=0, depth=None):

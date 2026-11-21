@@ -43,7 +43,7 @@ def main():
     # 3) 穿模能查出来，深度大致对；声明过的不算
     src = "from qblib import *\na = box(20, 20, 20)\nb = box(10, 10, 10)\nat(b, 12, 0, 5)\n"
     r = build(cfg, src, "pen")
-    assert any("穿模" in i for i in r["issues"]), r
+    assert any("穿模" in i and "最深的地方在" in i for i in r["issues"]), r
     depth = r["pairs"][0]["penetration"]
     assert 2.5 <= depth <= 3.5, r["pairs"]
     r = build(cfg, src.replace("12, 0, 5", "14.5, 0, 5") + "allow_overlap(a, b)\n", "pen2")    # 只压进 0.5 mm 的配合
@@ -69,7 +69,11 @@ def main():
     r = build(cfg, "from qblib import *\nc = extrude([(0,0),(60,0),(60,20),(20,20),(20,70),(60,70),(60,90),(0,90)], 20)\n", "concave")
     assert abs(r["parts"][0]["volume"] - (60 * 90 - 40 * 50) * 20) < 1, r["parts"][0]["volume"]
     # 没钻到零件的孔要报错；声明了 allow_overlap 但其实是实体穿实体，照样算穿模
-    r = build(cfg, "from qblib import *\nb = box(40, 40, 20)\nhole(b, 8, (0, 0, 0), axis='z', depth=20)\n", "nohole")
+    # 盲孔的方向写反了也能钻进去（从底面往上、从侧面往里）；pos 根本不在零件上才报错
+    r = build(cfg, "from qblib import *\nb = box(40, 40, 20)\nhole(b, 8, (0, 0, 0), axis='z', depth=10)\n"
+                   "hole(b, 6, (20, 0, 10), axis='-x', depth=8)\nhole(b, 6, (-20, 10, 10), axis='-x', depth=8)\n", "flip")
+    assert r.get("ok") and abs(r["parts"][0]["volume"] - (32000 - 3.14159 * 16 * 10 - 2 * 3.14159 * 9 * 8)) < 30, r
+    r = build(cfg, "from qblib import *\nb = box(40, 40, 20)\nhole(b, 8, (0, 0, 60), axis='z', depth=20)\n", "nohole")
     assert not r["ok"] and "没钻到材料" in r["error"]["msg"] and r["error"]["line"] == 3, r
     r = build(cfg, "from qblib import *\nb = box(40, 40, 20)\nc = cylinder(8, 60)\nat(c, 0, 0, -20)\nallow_overlap(b, c)\n", "fakefit")
     assert any("allow_overlap" in i for i in r["issues"]), r["issues"]
