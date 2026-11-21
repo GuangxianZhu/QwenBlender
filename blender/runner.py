@@ -111,6 +111,19 @@ def default_material(objs):
             m.diffuse_color = (0.35, 0.37, 0.4, 1)
         o.data.materials.clear()
         o.data.materials.append(m)
+    # 只设了 diffuse_color（视图颜色）、没接节点颜色的材质：渲染出来是一片白，把视图颜色搬到节点上
+    for mt in {x for o in objs for x in o.data.materials if x is not None}:
+        try:
+            if not mt.node_tree:
+                mt.use_nodes = True
+            bsdf = next((n for n in mt.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+            if not bsdf or bsdf.inputs["Base Color"].is_linked:
+                continue
+            base, dc = tuple(bsdf.inputs["Base Color"].default_value), tuple(mt.diffuse_color)
+            if all(abs(base[i] - 0.8) < 1e-3 for i in range(3)) and any(abs(dc[i] - 0.8) > 1e-3 for i in range(3)):
+                bsdf.inputs["Base Color"].default_value = (dc[0], dc[1], dc[2], 1)
+        except Exception:
+            pass
 
 
 def sanitize_names(objs):
