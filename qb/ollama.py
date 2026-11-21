@@ -52,7 +52,7 @@ def image_b64(path):
         return base64.b64encode(f.read()).decode("ascii")
 
 
-def chat(cfg, model, messages, tools, on_delta=None, think=None):
+def chat(cfg, model, messages, tools, on_delta=None, think=None, _retry=False):
     """发一轮对话，返回 {'content', 'thinking', 'tool_calls', 'prompt_tokens', 'output_tokens'}。
     on_delta(kind, text)：kind 是 'thinking' 或 'content'，流式输出用。"""
     body = {"model": model, "messages": messages, "stream": True, "keep_alive": "30m",
@@ -60,8 +60,8 @@ def chat(cfg, model, messages, tools, on_delta=None, think=None):
     if tools:
         body["tools"] = tools
     use_think = cfg.get("think", True) if think is None else think
-    if use_think:
-        body["think"] = True
+    if not _retry:
+        body["think"] = bool(use_think)  # 不写的话，带思考能力的模型默认是开着的，所以关也要明说
     req = urllib.request.Request(cfg["ollama_host"] + "/api/chat", data=json.dumps(body).encode("utf-8"),
                                  headers={"Content-Type": "application/json"})
     out = {"content": "", "thinking": "", "tool_calls": [], "prompt_tokens": 0, "output_tokens": 0}
@@ -94,8 +94,8 @@ def chat(cfg, model, messages, tools, on_delta=None, think=None):
             msg = json.loads(msg).get("error", msg)
         except ValueError:
             pass
-        if use_think and "think" in msg.lower():
-            return chat(cfg, model, messages, tools, on_delta, think=False)
+        if "think" in msg.lower() and not _retry:        # 模型不支持思考开关：去掉这个字段再发一次
+            return chat(cfg, model, messages, tools, on_delta, think=think, _retry=True)
         if "does not support tools" in msg:
             raise OllamaError("模型 %s 不支持工具调用，换一个带 tools 能力的模型（ollama show %s 可以看）" % (model, model))
         raise OllamaError("Ollama 返回错误：%s" % msg)

@@ -45,7 +45,7 @@ def main(cfg, task=None):
     if not task and os.path.exists(tf):
         task = open(tf, encoding="utf-8-sig").read().strip() or None
     opts = {}                                                 # 可选：jobs/trial_options.json
-    of = os.path.join(cfg["jobs_dir"], "trial_options.json")  # {"selftest": false, "a_think": false}
+    of = os.path.join(cfg["jobs_dir"], "trial_options.json")  # {"selftest": false, "a_think": false, "only": "a"}
     if os.path.exists(of):
         try:
             import json
@@ -69,7 +69,7 @@ def main(cfg, task=None):
             return False
         print("\n===== 第二部分：同一个任务，没有工具和有工具各做一遍 =====")
         from . import compare
-        root, a, b = compare.main(cfg, task or TASK, model=model, a_think=opts.get("a_think"))
+        root, a, b = compare.main(cfg, task or TASK, model=model, a_think=opts.get("a_think"), only=opts.get("only"))
         result = "finished" if b.get("finished") else "stopped"
         return bool(b.get("finished"))
     except ollama.OllamaError as e:

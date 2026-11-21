@@ -73,6 +73,8 @@ def run_baseline(cfg, model, task, job_dir, con, think=None):
 def _row(name, r):
     b = r.get("build") or {}
     pg = r.get("page") or {}
+    if r.get("skipped") or (r.get("rounds") == 0 and not r.get("has_py")):
+        return "| %s | 这次没跑 | - | - | - |" % name
     if r.get("empty"):
         model = "什么都没写出来（思考把上下文用完了）"
     elif not r.get("has_py", True):
@@ -91,7 +93,8 @@ def _row(name, r):
     return "| %s | %s 秒 | %s | %s | %s |" % (name, r.get("seconds", "?"), r.get("rounds", "?"), model, page)
 
 
-def main(cfg, task, model=None, con=None, a_think=None):
+def main(cfg, task, model=None, con=None, a_think=None, only=None):
+    """only="a" 只跑没有工具那一遍，only="b" 只跑有工具那一遍。"""
     con = con or agent.Console()
     model = model or ollama.pick_model(cfg)
     root = os.path.join(cfg["jobs_dir"], time.strftime("compare_%Y%m%d_%H%M%S"))
@@ -104,7 +107,11 @@ def main(cfg, task, model=None, con=None, a_think=None):
     a_name = "A 没有工具" + ("（关思考）" if a_think is False else "")
     con.line("\n===== %s（只回答一次）=====" % a_name)
     try:
-        a = run_baseline(cfg, model, task, a_dir, con, think=a_think)
+        if only == "b":
+            a = {"seconds": 0, "rounds": 0, "has_py": False, "has_html": False, "skipped": True}
+            con.line("（这次跳过）")
+        else:
+            a = run_baseline(cfg, model, task, a_dir, con, think=a_think)
     except ollama.OllamaError as e:
         con.line("A 出错：%s" % e)
         a = {"seconds": 0, "rounds": 1, "has_py": False, "has_html": False, "error": str(e)}
@@ -114,7 +121,11 @@ def main(cfg, task, model=None, con=None, a_think=None):
     con.line("\n===== B：有工具 =====")
     job = tools.Job(b_dir, cfg)
     try:
-        st = agent.run(job, cfg, task=task, model=model, console=con)
+        if only == "a":
+            st = dict(job.state, rounds=0, seconds=0)
+            con.line("（这次跳过）")
+        else:
+            st = agent.run(job, cfg, task=task, model=model, console=con)
     except ollama.OllamaError as e:
         con.line("B 出错：%s" % e)
         st = dict(job.state, error=str(e))
