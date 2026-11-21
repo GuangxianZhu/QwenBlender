@@ -69,9 +69,17 @@ def main(cfg, task=None):
             return False
         print("\n===== 第二部分：同一个任务，没有工具和有工具各做一遍 =====")
         from . import compare
-        root, a, b = compare.main(cfg, task or TASK, model=model, a_think=opts.get("a_think"), only=opts.get("only"))
-        result = "finished" if b.get("finished") else "stopped"
-        return bool(b.get("finished"))
+        import re
+        tasks = [t.strip() for t in re.split(r"(?m)^\s*-{3,}\s*$", task or TASK) if t.strip()]   # 多道题用一行 --- 隔开
+        done = []
+        for i, one in enumerate(tasks, 1):
+            if len(tasks) > 1:
+                print("\n########## 第 %d / %d 道题 ##########" % (i, len(tasks)))
+            root, a, b = compare.main(cfg, one, model=model, a_think=opts.get("a_think"), only=opts.get("only"))
+            done.append(bool(b.get("finished")))
+            print("TRIAL_TASK_DONE %d %s %s" % (i, "finished" if done[-1] else "stopped", root))
+        result = "finished" if all(done) else "stopped"
+        return all(done)
     except ollama.OllamaError as e:
         print("\nOllama 出错：%s" % e)
         return False

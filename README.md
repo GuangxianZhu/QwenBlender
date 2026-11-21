@@ -32,7 +32,7 @@
 | `model.blend` | Blender 工程 |
 | `sheet.png` | 四视图 |
 
-想先看看能不能跑通，双击 `试跑.bat`：不用输入任何东西，它先自检，再让 Qwen 把同一个任务（C 形夹）做两遍：一遍没有工具、只回答一次，一遍用全套工具。全过程记在 `jobs/trial_log.txt`，对比结果在 `jobs/compare_时间/compare.md`。想换题目，把任务写进 `jobs/trial_task.txt` 再双击。
+想先看看能不能跑通，双击 `试跑.bat`：不用输入任何东西，它先自检，再让 Qwen 把同一个任务（C 形夹）做两遍：一遍没有工具、只回答一次，一遍用全套工具。全过程记在 `jobs/trial_log.txt`，对比结果在 `jobs/compare_时间/compare.md`。想换题目，把任务写进 `jobs/trial_task.txt` 再双击；多道题用单独一行 `---` 隔开。
 
 菜单里的「自检」不需要 Qwen：把范例跑一遍，确认 Blender 和浏览器这条链路在这台电脑上是通的。第一次用先跑它。
 
