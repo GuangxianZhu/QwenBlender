@@ -284,6 +284,11 @@ def measure_all(objs, plan=None):
                 contact[b.name].append(a.name)
                 if key not in allow_ov:
                     issues.append("穿模：%s 和 %s 互相扎进去了，最深约 %.2f mm" % (a.name, b.name, pen))
+                elif pen > 1.0:
+                    issues.append("穿模：%s 和 %s 用 allow_overlap 声明了重叠，但扎进去约 %.2f mm，这不是配合，是实体穿过实体。"
+                                  "给被穿过的零件用 hole() 打孔，然后删掉这条 allow_overlap" % (a.name, b.name, pen))
+                else:
+                    warns.append("已声明允许重叠：%s 和 %s（约 %.2f mm）" % (a.name, b.name, pen))
             elif gap <= TOL:
                 contact[a.name].append(b.name)
                 contact[b.name].append(a.name)

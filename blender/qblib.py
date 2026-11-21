@@ -351,6 +351,7 @@ def extrude(points_xy, h, name=None):
     _cap(bm, a, flip=True)
     _cap(bm, b)
     _bridge(bm, a, b)
+    bm.normal_update()          # 凹多边形要先有法线，三角化才不会把凹进去的地方填上
     bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 4])
     return _finish(bm, name, "Extrude")
 
@@ -845,10 +846,25 @@ def union(a, *others):
     return a
 
 
+def _volume(obj):
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    v = abs(bm.calc_volume(signed=True))
+    bm.free()
+    return v
+
+
 def cut(a, *cutters, keep=False):
-    """从 a 上减掉 cutters（刀具默认用完删掉；keep=True 保留），返回 a。"""
+    """从 a 上减掉 cutters（刀具默认用完删掉；keep=True 保留），返回 a。刀具没碰到 a 会报错。"""
     for b in cutters:
+        v0 = _volume(a)
         _boolean(a, b, "DIFFERENCE")
+        if v0 - _volume(a) < 1e-6 * max(v0, 1.0):
+            bb, cb = bbox(a), bbox(b)
+            raise ValueError("这一刀什么都没切到：%s（范围 x %g~%g  y %g~%g  z %g~%g）和刀具（范围 x %g~%g  y %g~%g  z %g~%g）没有重叠。"
+                             "检查刀具的位置和方向" % (a.name, bb["min"][0], bb["max"][0], bb["min"][1], bb["max"][1],
+                                              bb["min"][2], bb["max"][2], cb["min"][0], cb["max"][0], cb["min"][1],
+                                              cb["max"][1], cb["min"][2], cb["max"][2]))
         if not keep:
             delete(b)
     return a
@@ -866,8 +882,9 @@ _DRILL_TWIST = Matrix.Rotation(0.3137, 4, "Z")   # 钻头转一个小角度，�
 
 
 def hole(obj, d, pos=(0, 0, 0), axis="z", depth=None):
-    """在 obj 上打一个圆孔。d 孔径；pos 是孔口中心的世界坐标 (x, y, z)；axis 是钻头前进的反方向
-    （'z' 表示从上往下钻，孔口朝 +Z；'x' 表示孔口朝 +X）。depth 不写就打通。"""
+    """在 obj 上打一个圆孔。d 孔径；pos 是孔口中心的世界坐标 (x, y, z)，要落在零件的表面上；
+    axis 是孔口朝哪边（钻头前进的反方向）：'z' 表示孔口朝 +Z、从上往下钻，pos 的 z 取零件顶面；
+    '-z' 表示从下往上钻，pos 的 z 取零件底面；'x' 表示孔口朝 +X。depth 不写就打通。没钻到零件会报错。"""
     _check_pos(d=d)
     p = _as_vec3(pos, "pos")
     ax = _axis(axis)
@@ -881,7 +898,20 @@ def hole(obj, d, pos=(0, 0, 0), axis="z", depth=None):
         c = cylinder(d, depth + 1, name=_auto_name("_drill"))
         c.matrix_world = Matrix.Translation(p - ax * depth) @ _align_z_to(ax) @ _DRILL_TWIST
     _update()
-    return cut(obj, c)
+    v0 = _volume(obj)
+    cut(obj, c)
+    if depth is not None:
+        want = math.pi * (d / 2) ** 2 * depth
+        got = v0 - _volume(obj)
+        if got < 0.3 * want:
+            k = max(range(3), key=lambda i: abs(ax[i]))
+            raise ValueError(
+                "这个孔基本没钻到材料（只去掉了应有体积的 %d%%）。孔口在 pos=(%g, %g, %g)，朝 %s，往反方向钻 %g 深；"
+                "而 %s 在 %s 方向的范围是 %g ~ %g。pos 要取孔口所在的那个表面：从上往下钻取顶面、axis='z'，"
+                "从下往上钻取底面、axis='-z'" % (
+                    round(100 * got / want), p.x, p.y, p.z, ("+" if ax[k] > 0 else "-") + "xyz"[k].upper(), depth,
+                    obj.name, "xyz"[k].upper(), bb["min"][k], bb["max"][k]))
+    return obj
 
 
 def holes_circle(obj, d, circle_d, n, center=(0, 0), axis="z", start_angle=0, depth=None):
@@ -1205,7 +1235,8 @@ def _scene_list(key, a, b=None):
 
 
 def allow_overlap(a, b):
-    """声明 a 和 b 的重叠是故意的（比如过盈配合、皮带压在轮上），检查时不算穿模。放在脚本最后调用。"""
+    """声明 a 和 b 的重叠是故意的，只用于过盈配合、皮带压在轮上这类本来就挤在一起的情况。
+    轴穿过板、螺杆穿过臂，应该用 hole() 打孔，不要用它盖住。放在脚本最后调用。"""
     _scene_list("qb_allow_overlap", a, b)
 
 
