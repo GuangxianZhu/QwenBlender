@@ -109,3 +109,51 @@ def check(job, cfg):
             seen.add(e)
             uniq.append(e)
     return {"ok": not uniq, "errors": uniq, "warnings": warnings, "images": images, "info": info}
+
+
+def check_plain(html, out_dir, cfg, prefix="page"):
+    """检查任意一个网页（不是用骨架生成的也行）：控制台报错、有没有画布、截图。"""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {"ok": False, "errors": ["没装 playwright"], "images": [], "info": {}}
+    url = pathlib.Path(html).resolve().as_uri()
+    errors, images, info = [], [], {}
+    try:
+        with sync_playwright() as p:
+            browser = _launch(p, cfg)
+            try:
+                for tag, vw, vh in (("desktop", 1280, 800), ("mobile", 390, 844)):
+                    page = browser.new_page(viewport={"width": vw, "height": vh})
+                    logs = []
+                    page.on("console", lambda m, logs=logs: logs.append(m.text) if m.type == "error" else None)
+                    page.on("pageerror", lambda e, logs=logs: logs.append(str(e)))
+                    page.on("requestfailed", lambda r, logs=logs: logs.append("加载失败：" + r.url[:120]))
+                    try:
+                        page.goto(url, wait_until="networkidle", timeout=30000)
+                    except Exception as e:  # noqa
+                        errors.append("[%s] 页面没加载完：%s" % (tag, str(e).splitlines()[0][:160]))
+                    page.wait_for_timeout(2500)
+                    for m in logs:
+                        if "GPU stall" in m or "GL Driver Message" in m:
+                            continue
+                        errors.append("[%s] %s" % (tag, m[:300]))
+                    m = page.evaluate("""(() => { const c = [...document.querySelectorAll('canvas')];
+                        return {canvas: c.length, big: c.filter(x => x.clientWidth > 100 && x.clientHeight > 100).length,
+                                text: document.body ? document.body.innerText.length : 0,
+                                over: document.documentElement.scrollWidth > innerWidth + 1}; })()""")
+                    info[tag] = m
+                    if m["big"] == 0:
+                        errors.append("[%s] 页面上没有 3D 画布" % tag)
+                    if tag == "mobile" and m["over"]:
+                        errors.append("[mobile] 手机上页面横向溢出了")
+                    name = "%s_%s.png" % (prefix, tag)
+                    page.screenshot(path=os.path.join(out_dir, name))
+                    images.append(name)
+                    page.close()
+            finally:
+                browser.close()
+    except Exception as e:  # noqa
+        errors.append("浏览器检查没跑起来：%s" % str(e).splitlines()[0][:300])
+    uniq = list(dict.fromkeys(errors))
+    return {"ok": not uniq, "errors": uniq, "images": images, "info": info}

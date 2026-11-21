@@ -32,6 +32,8 @@
 | `model.blend` | Blender 工程 |
 | `sheet.png` | 四视图 |
 
+想先看看能不能跑通，双击 `试跑.bat`：不用输入任何东西，它先自检，再让 Qwen 把同一个任务（C 形夹）做两遍：一遍没有工具、只回答一次，一遍用全套工具。全过程记在 `jobs/trial_log.txt`，对比结果在 `jobs/compare_时间/compare.md`。
+
 菜单里的「自检」不需要 Qwen：把三个范例跑一遍，确认 Blender 和浏览器这条链路在这台电脑上是通的。第一次用先跑它。
 
 需要：Ollama（里面有带 tools 和 vision 能力的 qwen 模型）、Blender 4.2 以上、Edge 或 Chrome。
@@ -146,7 +148,9 @@ python -m qb selftest             三个范例：建模 → 网页 → 浏览器
 ## 目录
 
 ```
-启动.bat          一键启动
+启动.bat          一键启动（调用 start.bat）
+试跑.bat          不用输入的试跑
+start.bat         git pull、准备环境、运行
 qb/               工具循环、工具实现、网页生成、浏览器检查、菜单
 blender/          qblib.py 零件库；runner.py 在 Blender 里运行、测量、渲染、导出
 web/              网页骨架（three.js r180 已打包在 vendor/ 里）

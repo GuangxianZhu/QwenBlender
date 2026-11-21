@@ -5,6 +5,7 @@
     python -m qb new "任务描述"        让 Qwen 做一个新任务（--no-page 只要模型）
     python -m qb fix <任务目录> "意见"  让 Qwen 按意见修改
     python -m qb selftest             自检（不用 Qwen）
+    python -m qb trial ["任务"]       试跑：自检 + 同一个任务没有工具/有工具各做一遍，日志写到 jobs/trial_log.txt
 
 下面这些是单个工具，不经过 Qwen，其他编程助手也可以直接调用：
     python -m qb build   <任务目录>          运行 model.py，打印报告，出四视图
@@ -37,6 +38,9 @@ def main(argv=None):
     if cmd in ("-h", "--help"):
         print(__doc__)
         return 0
+    if cmd == "trial":
+        from . import trial
+        return 0 if trial.main(cfg, task=rest[0] if rest else None) else 1
     if cmd == "selftest":
         return 0 if selftest.main(cfg, names=rest or None) else 1
     if cmd == "help":
