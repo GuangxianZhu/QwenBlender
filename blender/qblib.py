@@ -22,7 +22,7 @@ __all__ = [
     "box", "rounded_box", "cylinder", "cone", "tube", "sphere", "torus", "prism",
     "extrude", "revolve", "pipe", "spring",
     # 机械件
-    "hex_bolt", "socket_screw", "nut", "screw_on", "washer", "threaded_rod", "spur_gear",
+    "hex_bolt", "socket_screw", "nut", "screw_on", "washer", "threaded_rod", "spur_gear", "ring_gear",
     "bearing", "flange", "l_bracket",
     # 加工
     "union", "cut", "intersect", "hole", "holes_circle", "bevel", "chamfer",
@@ -724,23 +724,12 @@ def washer(d_in, d_out, t, name=None):
 
 # ---------------------------------------------------------------- 齿轮、轴承、法兰、角码
 
-def spur_gear(module, teeth, width, bore=0, pressure_angle=20, backlash=None, name=None):
-    """直齿圆柱齿轮（渐开线齿形）。module 模数，teeth 齿数，width 齿宽，bore 中心孔直径。
-    分度圆直径 = module × teeth；两个齿轮的中心距 = module × (齿数1 + 齿数2) / 2。
-    原点在底面中心。0 度方向（+X）是一个齿的中心；要和另一个齿轮啮合，把其中一个转半个齿：rot(g, 0, 0, 180 / 齿数)。
-    backlash 是齿侧间隙（毫米，默认 0.04 × 模数），让两个齿轮不会互相扎进去。"""
-    _check_pos(module=module, width=width)
-    z = int(teeth)
-    if z < 6:
-        raise ValueError("spur_gear 的齿数 teeth 至少是 6")
-    m = float(module)
-    pa = math.radians(pressure_angle)
+def _gear_profile(m, z, pa_deg, ra, rf, bl):
+    """渐开线齿轮的轮廓点。ra 齿顶圆半径，rf 齿根圆半径，bl 齿侧间隙（负数就是把齿加厚）。0 度方向是一个齿的中心。"""
+    pa = math.radians(pa_deg)
     r = m * z / 2
     rb = r * math.cos(pa)
-    ra = r + m
-    rf = max(r - 1.25 * m, 0.2 * r)
     inv = lambda a: math.tan(a) - a
-    bl = 0.04 * m if backlash is None else float(backlash)
     half0 = math.pi / (2 * z) + inv(pa) - bl / (2 * r)
     flank = []
     k = 8
@@ -748,13 +737,12 @@ def spur_gear(module, teeth, width, bore=0, pressure_angle=20, backlash=None, na
     for i in range(k + 1):
         rho = r_start + (ra - r_start) * i / k
         alpha = math.acos(min(1.0, rb / rho))
-        flank.append((rho, half0 - inv(alpha)))
+        flank.append((rho, max(half0 - inv(alpha), 0.02 * math.pi / z)))
     pts = []
     for t in range(z):
         c = 2 * math.pi * t / z
         gap = math.pi / z
         a_root = flank[0][1]
-        # 齿根圆弧（上一个齿槽的后半段）
         if rf < r_start - 1e-6:
             pts.append((rf * math.cos(c - a_root), rf * math.sin(c - a_root)))
         for rho, a in flank:
@@ -765,7 +753,23 @@ def spur_gear(module, teeth, width, bore=0, pressure_angle=20, backlash=None, na
             pts.append((rf * math.cos(c + a_root), rf * math.sin(c + a_root)))
         mid = c + gap
         pts.append((rf * math.cos(mid), rf * math.sin(mid)))
-    obj = extrude(pts, width, name=name or _auto_name("Gear"))
+    return pts
+
+
+def spur_gear(module, teeth, width, bore=0, pressure_angle=20, backlash=None, name=None):
+    """直齿圆柱齿轮（渐开线齿形）。module 模数，teeth 齿数，width 齿宽，bore 中心孔直径。
+    分度圆直径 = module × teeth；两个齿轮的中心距 = module × (齿数1 + 齿数2) / 2。
+    原点在底面中心。0 度方向（+X）是一个齿的中心；要和另一个齿轮啮合，把其中一个转半个齿：rot(g, 0, 0, 180 / 齿数)。
+    backlash 是齿侧间隙（毫米，默认 0.04 × 模数），让两个齿轮不会互相扎进去。"""
+    _check_pos(module=module, width=width)
+    z = int(teeth)
+    if z < 6:
+        raise ValueError("spur_gear 的齿数 teeth 至少是 6，现在是 %r" % (teeth,))
+    m = float(module)
+    r = m * z / 2
+    rf = max(r - 1.25 * m, 0.2 * r)
+    bl = 0.04 * m if backlash is None else float(backlash)
+    obj = extrude(_gear_profile(m, z, pressure_angle, r + m, rf, bl), width, name=name or _auto_name("Gear"))
     if bore and bore > 0:
         if bore >= 2 * rf:
             raise ValueError("spur_gear 的中心孔 bore=%s 比齿根圆 %.2f 还大" % (bore, 2 * rf))
@@ -773,6 +777,32 @@ def spur_gear(module, teeth, width, bore=0, pressure_angle=20, backlash=None, na
         at(c, 0, 0, -1)
         cut(obj, c)
     obj["qb_kind"] = "gear"
+    obj["qb_module"] = m
+    obj["qb_teeth"] = z
+    return obj
+
+
+def ring_gear(module, teeth, width, d_out, pressure_angle=20, backlash=None, name=None):
+    """内齿圈（齿朝里的齿轮，行星减速器的外圈）。module 模数，teeth 齿数，width 齿宽，d_out 外径。
+    分度圆直径 = module × teeth。里面的齿轮和它啮合时，中心距 = module × (内齿圈齿数 - 小齿轮齿数) / 2。
+    原点在底面中心。0 度方向（+X）是一个齿槽的中心：一个齿轮放在 +X 方向、自己 0 度的齿朝 +X，正好插进这个齿槽。
+    行星减速器要求：内齿圈齿数 = 太阳轮齿数 + 2 × 行星轮齿数。"""
+    _check_pos(module=module, width=width, d_out=d_out)
+    z = int(teeth)
+    if z < 12:
+        raise ValueError("ring_gear 的齿数 teeth 至少是 12，现在是 %r" % (teeth,))
+    m = float(module)
+    r = m * z / 2
+    if d_out <= 2 * (r + 1.25 * m) + 1:
+        raise ValueError("ring_gear 的外径 d_out=%s 太小：齿根圆直径就有 %.1f，外径至少要 %.1f" % (
+            d_out, 2 * (r + 1.25 * m), 2 * (r + 1.25 * m) + 2))
+    bl = 0.04 * m if backlash is None else float(backlash)
+    obj = cylinder(d_out, width, name=name or _auto_name("RingGear"))
+    # 刀具是一个「加厚了齿、齿顶更高」的外齿轮：它的齿切出内齿圈的齿槽
+    cutter = extrude(_gear_profile(m, z, pressure_angle, r + 1.25 * m, r - m, -bl), width + 2, name=_auto_name("_ringcut"))
+    at(cutter, 0, 0, -1)
+    cut(obj, cutter)
+    obj["qb_kind"] = "ring_gear"
     obj["qb_module"] = m
     obj["qb_teeth"] = z
     return obj

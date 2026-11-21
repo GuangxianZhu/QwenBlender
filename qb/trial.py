@@ -41,6 +41,9 @@ class Tee:
 
 def main(cfg, task=None):
     os.makedirs(cfg["jobs_dir"], exist_ok=True)
+    tf = os.path.join(cfg["jobs_dir"], "trial_task.txt")      # 想换题目：把任务写进 jobs/trial_task.txt
+    if not task and os.path.exists(tf):
+        task = open(tf, encoding="utf-8-sig").read().strip() or None
     log = os.path.join(cfg["jobs_dir"], "trial_log.txt")
     old = sys.stdout
     sys.stdout = Tee(old, log)

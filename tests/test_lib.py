@@ -75,6 +75,18 @@ def main():
     assert any("allow_overlap" in i for i in r["issues"]), r["issues"]
     print("凹轮廓、空钻、滥用 allow_overlap：都能查出来")
 
+    # 行星轮系：太阳轮 18、行星轮 18×3、内齿圈 54，相位对好以后不穿模，而且互相接触
+    r = build(cfg, "from qblib import *\nimport math\nM, ZS, ZP, ZR, W = 2, 18, 18, 54, 10\n"
+                   "ring = ring_gear(M, ZR, W, 124)\nsun = spur_gear(M, ZS, W, bore=8)\nrot(sun, 0, 0, 180 / ZS)\n"
+                   "a = M * (ZS + ZP) / 2\np = spur_gear(M, ZP, W, bore=6)\nat(p, a, 0, 0)\nps = array_circular(p, 3)\n", "planet")
+    assert r.get("ok") and not r["issues"], (r.get("issues"), r.get("error"))
+    p = {x["name"]: x for x in r["parts"]}
+    assert len(p["RingGear_1"]["touches"]) == 3 and len(p["Gear_1"]["touches"]) == 3, (p["RingGear_1"]["touches"], p["Gear_1"]["touches"])
+    r = build(cfg, "from qblib import *\nring = ring_gear(2, 54, 10, 124)\nsun = spur_gear(2, 18, 10)\n"
+                   "p = spur_gear(2, 18, 10)\nat(p, 36, 0, 0)\n", "planet_bad")      # 太阳轮没转半个齿
+    assert any("穿模" in i for i in r["issues"]), r["issues"]
+    print("行星轮系：相位对了不穿模，没对会被查出来")
+
     # 5) 出错信息带行号
     r = build(cfg, "from qblib import *\na = box(10, 10, 10)\nb = cylinder(-5, 10)\n", "err")
     assert not r["ok"] and r["error"]["line"] == 3 and "d" in r["error"]["msg"], r

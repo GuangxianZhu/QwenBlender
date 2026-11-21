@@ -17,6 +17,7 @@ makers = [
     lambda: nut(8), lambda: nut(6, thread=False), lambda: nut(20), lambda: washer(8.4, 16, 1.6),
     lambda: threaded_rod(6, 25),
     lambda: spur_gear(2, 20, 10, bore=8), lambda: spur_gear(1, 12, 5), lambda: spur_gear(3, 40, 12, bore=20),
+    lambda: ring_gear(2, 54, 10, 124), lambda: ring_gear(1, 30, 6, 40),
     lambda: bearing(8, 22, 7), lambda: bearing(20, 47, 14), lambda: flange(60, 30, 8, 46, 6, 6),
     lambda: l_bracket(20, 30, 25, 3),
     lambda: bevel(box(20, 20, 10), 2), lambda: chamfer(cylinder(20, 10), 1.5),

@@ -225,6 +225,29 @@ def threaded_fit(a, b):
     return off < 0.05 and 0 <= along <= bolt.get("qb_length", 0) + 1e-6
 
 
+def gear_mesh(a, b):
+    """a、b 是一对装在正确中心距上的齿轮（或齿轮和内齿圈）吗？是的话它们算接触（齿侧留有间隙，直接量会差一点）。
+    穿模照常检查：相位没对上、齿顶到齿，一样会报。"""
+    oa, ob = a.obj, b.obj
+    ka, kb = oa.get("qb_kind"), ob.get("qb_kind")
+    if ka not in ("gear", "ring_gear") or kb not in ("gear", "ring_gear") or (ka == kb == "ring_gear"):
+        return False
+    m = oa.get("qb_module", 0)
+    if abs(m - ob.get("qb_module", -1)) > 1e-6:
+        return False
+    za = (oa.matrix_world.to_3x3() @ Vector((0, 0, 1))).normalized()
+    zb = (ob.matrix_world.to_3x3() @ Vector((0, 0, 1))).normalized()
+    if abs(za.dot(zb)) < 0.9999:
+        return False
+    d = ob.matrix_world.translation - oa.matrix_world.translation
+    dist = (d - za * d.dot(za)).length
+    if "ring_gear" in (ka, kb):
+        want = m * abs(oa["qb_teeth"] - ob["qb_teeth"]) / 2
+    else:
+        want = m * (oa["qb_teeth"] + ob["qb_teeth"]) / 2
+    return abs(dist - want) < 0.15 and a.lo[2] < b.hi[2] and b.lo[2] < a.hi[2] if abs(za.z) > 0.99 else abs(dist - want) < 0.15
+
+
 def r3(v, nd=2):
     return [round(float(c), nd) for c in v]
 
@@ -274,6 +297,8 @@ def measure_all(objs, plan=None):
                 gap, pen = 0.0, 0.0
             else:
                 gap, pen = pair_relation(a, b)
+                if pen <= TOL and gear_mesh(a, b):
+                    gap = 0.0
             for x, y in ((a, b), (b, a)):
                 if gap < nearest[x.name][1]:
                     nearest[x.name] = (y.name, gap)
@@ -799,6 +824,9 @@ def mode_measure(job, a):
             out["note"] = "同规格的螺栓和螺母同轴拧在一起，按螺纹配合算接触"
         else:
             gap, pen = pair_relation(A, B)
+            if pen <= TOL and gear_mesh(A, B):
+                gap = 0.0
+                out["note"] = "两个齿轮的中心距正好是啮合距离，按啮合算接触"
         ca, cb = (A.lo + A.hi) / 2, (B.lo + B.hi) / 2
         out["relation"] = {
             "gap": round(gap, 3), "penetration": round(pen, 3),
