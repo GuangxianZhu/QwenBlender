@@ -22,7 +22,8 @@ __all__ = [
     "box", "rounded_box", "cylinder", "cone", "tube", "sphere", "torus", "prism",
     "extrude", "revolve", "pipe", "spring",
     # 机械件
-    "hex_bolt", "socket_screw", "nut", "screw_on", "washer", "threaded_rod", "spur_gear", "ring_gear",
+    "hex_bolt", "socket_screw", "nut", "screw_on", "washer", "threaded_rod", "spur_gear", "ring_gear", "helical_gear", "worm", "worm_wheel",
+    "mesh", "mesh_worm", "pulley", "belt", "bent_plate", "link_bar",
     "bearing", "flange", "l_bracket",
     # 加工
     "union", "cut", "intersect", "hole", "holes_circle", "bevel", "chamfer",
@@ -422,13 +423,16 @@ def _fillet_path(points, bend_r, steps=10):
     return out
 
 
-def _sweep(path, radii, n):
-    """沿路径扫掠若干同心圆环。radii: [外半径] 或 [外半径, 内半径]。"""
+def _sweep(path, radii, n, closed=False):
+    """沿路径扫掠若干同心圆环。radii: [外半径] 或 [外半径, 内半径]。closed=True 时路径首尾相接（皮带）。"""
     bm = bmesh.new()
     tangents = []
     for i in range(len(path)):
-        a = path[max(i - 1, 0)]
-        b = path[min(i + 1, len(path) - 1)]
+        if closed:
+            a, b = path[i - 1], path[(i + 1) % len(path)]
+        else:
+            a = path[max(i - 1, 0)]
+            b = path[min(i + 1, len(path) - 1)]
         tangents.append((b - a).normalized())
     t0 = tangents[0]
     ref = Vector((0, 0, 1)) if abs(t0.z) < 0.9 else Vector((1, 0, 0))
@@ -445,11 +449,14 @@ def _sweep(path, radii, n):
                                                  bn * math.sin(2 * math.pi * k / n)) * r) for k in range(n)])
         prev_t = t
     for li, rings in enumerate(layers):
-        for i in range(len(rings) - 1):
+        for i in range(len(rings) - (0 if closed else 1)):
+            j = (i + 1) % len(rings)
             if li == 0:
-                _bridge(bm, rings[i], rings[i + 1])
+                _bridge(bm, rings[i], rings[j])
             else:
-                _bridge(bm, rings[i + 1], rings[i])
+                _bridge(bm, rings[j], rings[i])
+    if closed:
+        return bm
     if len(radii) == 1:
         _cap(bm, layers[0][0], flip=True)
         _cap(bm, layers[0][-1])
@@ -805,6 +812,367 @@ def ring_gear(module, teeth, width, d_out, pressure_angle=20, backlash=None, nam
     obj["qb_kind"] = "ring_gear"
     obj["qb_module"] = m
     obj["qb_teeth"] = z
+    return obj
+
+
+def _extrude_twist(pts, h, twist, name, base):
+    """把轮廓沿 Z 拉伸，同时一层一层地转（斜齿轮用）。twist 是从底到顶一共转过的弧度。"""
+    if _poly_area(pts) < 0:
+        pts = list(reversed(pts))
+    steps = max(2, int(math.ceil(abs(twist) / math.radians(4))), int(math.ceil(h / 3.0)))
+    bm = bmesh.new()
+    rows = []
+    for k in range(steps + 1):
+        a = twist * k / steps
+        ca, sa = math.cos(a), math.sin(a)
+        rows.append([bm.verts.new((x * ca - y * sa, x * sa + y * ca, h * k / steps)) for x, y in pts])
+    n = len(pts)
+    for r0, r1 in zip(rows[:-1], rows[1:]):
+        for i in range(n):
+            j = (i + 1) % n
+            bm.faces.new((r0[i], r0[j], r1[j]))
+            bm.faces.new((r0[i], r1[j], r1[i]))
+    _cap(bm, rows[0], flip=True)
+    _cap(bm, rows[-1])
+    bm.normal_update()
+    bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 4])
+    return _finish(bm, name, base)
+
+
+def helical_gear(module, teeth, width, helix_angle=15, bore=0, pressure_angle=20, backlash=None, name=None):
+    """斜齿圆柱齿轮。module 模数（端面），teeth 齿数，width 齿宽，helix_angle 螺旋角（度），bore 中心孔直径。
+    一对啮合的斜齿轮螺旋角大小相等、方向相反：一个写 15，另一个写 -15。中心距和直齿轮一样 = module × (齿数1 + 齿数2) / 2。
+    原点在底面中心。对齿用 mesh(g2, g1)。"""
+    _check_pos(module=module, width=width)
+    z = int(teeth)
+    if z < 6:
+        raise ValueError("helical_gear 的齿数 teeth 至少是 6，现在是 %r" % (teeth,))
+    if abs(helix_angle) > 45:
+        raise ValueError("helical_gear 的螺旋角 helix_angle 要在 -45 ~ 45 度之间，现在是 %r" % (helix_angle,))
+    m = float(module)
+    r = m * z / 2
+    rf = max(r - 1.25 * m, 0.2 * r)
+    bl = 0.04 * m if backlash is None else float(backlash)
+    tau = math.tan(math.radians(helix_angle)) / r              # 每升高 1 mm 转过的弧度
+    obj = _extrude_twist(_gear_profile(m, z, pressure_angle, r + m, rf, bl), width, tau * width,
+                         name or _auto_name("HelicalGear"), "HelicalGear")
+    if bore and bore > 0:
+        if bore >= 2 * rf:
+            raise ValueError("helical_gear 的中心孔 bore=%s 比齿根圆 %.2f 还大" % (bore, 2 * rf))
+        c = cylinder(bore, width + 2, name=_auto_name("_bore"))
+        at(c, 0, 0, -1)
+        cut(obj, c)
+    obj["qb_kind"] = "gear"
+    obj["qb_module"] = m
+    obj["qb_teeth"] = z
+    obj["qb_twist"] = tau
+    return obj
+
+
+def worm(module, length, starts=1, q=10, backlash=None, name=None):
+    """蜗杆（右旋）。module 模数，length 长度，starts 头数，q 直径系数（分度圆直径 = q × module，默认 10）。
+    轴线沿 Z，原点在底面中心。转一圈，蜗轮转过 starts 个齿。配套的蜗轮用 worm_wheel，用 mesh_worm 摆位置和对齿。"""
+    _check_pos(module=module, length=length, q=q)
+    st = int(starts)
+    if st < 1 or st > 4:
+        raise ValueError("worm 的头数 starts 要在 1 ~ 4 之间，现在是 %r" % (starts,))
+    m = float(module)
+    rp = q * m / 2
+    if rp - 1.2 * m < 0.5 * m:
+        raise ValueError("worm 的直径系数 q=%s 太小，蜗杆芯部没有了，q 至少取 6" % q)
+    px = math.pi * m                       # 轴向齿距
+    bl = 0.08 * m if backlash is None else float(backlash)
+    half = px / 4 - bl / 2                 # 分度线上的半齿厚
+    tan_a = math.tan(math.radians(20))
+
+    def rfun(zz):
+        def f(th):
+            fr = (zz / px - st * th / (2 * math.pi)) / st
+            fr = (fr * st) % 1.0
+            u = abs(fr - 0.5) * px
+            return min(rp + m, max(rp - 1.2 * m, rp + (half - u) / tan_a))
+        return f
+    rings = [(zz, rfun(zz)) for zz in _zs(0.0, length, max(px / 16, length / 400))]
+    obj = _finish(_stack_bm(rings, _segs(2 * rp + 2 * m)), name, "Worm", smooth=40)
+    obj["qb_kind"] = "worm"
+    obj["qb_module"] = m
+    obj["qb_starts"] = st
+    obj["qb_d"] = 2 * rp
+    obj["qb_length"] = float(length)
+    return obj
+
+
+def worm_wheel(module, teeth, width, starts=1, q=10, bore=0, name=None):
+    """蜗轮，和 worm(module, …, starts, q) 配套（module、starts、q 要写成一样的）。teeth 齿数，width 齿宽，bore 中心孔直径。
+    分度圆直径 = module × teeth。中心距 = (q × module + module × teeth) / 2。传动比 = teeth / starts。
+    原点在底面中心。用 mesh_worm(wheel, worm) 摆位置和对齿。"""
+    m = float(module)
+    lead_angle = math.degrees(math.atan(int(starts) / float(q)))
+    obj = helical_gear(m, teeth, width, helix_angle=lead_angle, bore=bore, backlash=0.08 * m,
+                       name=name or _auto_name("WormWheel"))
+    obj["qb_kind"] = "worm_wheel"
+    obj["qb_starts"] = int(starts)
+    obj["qb_q"] = float(q)
+    return obj
+
+
+def _z_axis(obj):
+    _update()
+    return (obj.matrix_world.to_3x3() @ Vector((0, 0, 1))).normalized()
+
+
+def _spin_z(obj):
+    """物体绕世界 Z 转过的角度（弧度）。只对轴线竖直的物体有意义。"""
+    _update()
+    x = obj.matrix_world.to_3x3() @ Vector((1, 0, 0))
+    return math.atan2(x.y, x.x)
+
+
+def mesh(g, ref, angle=0):
+    """把齿轮 g 放到齿轮 ref 旁边并把齿对好。两个齿轮的轴线都要竖直（沿 Z），模数要一样。
+    angle 是 g 在 ref 的哪个方向（度，0 是 +X，90 是 +Y）。g 的高度（z）不变。
+    - 两个外齿轮：g 放到中心距 = module × (齿数和) / 2 的位置。
+    - ref 是内齿圈：g 放在齿圈里面，中心距 = module × (齿数差) / 2。
+    - g 是内齿圈：不挪位置，只转它，让它和已经摆好的 ref 对上齿（ref 要已经在正确的中心距上）。
+    斜齿轮也可以（两个的螺旋角要相反）。先 mesh 再整体搬动；搬动以后不要再单独转其中一个。"""
+    for o in (g, ref):
+        if o.get("qb_kind") not in ("gear", "ring_gear"):
+            raise ValueError("mesh(g, ref)：两个都要是 spur_gear / helical_gear / ring_gear 做出来的，%s 不是" % o.name)
+        if abs(_z_axis(o).z) < 0.9999:
+            raise ValueError("mesh：%s 的轴线不是竖直的。先在轴线竖直的时候 mesh，对好以后再整体转" % o.name)
+    kg, kr = g["qb_kind"], ref["qb_kind"]
+    if kg == kr == "ring_gear":
+        raise ValueError("mesh：两个内齿圈不能互相啮合")
+    m = g["qb_module"]
+    if abs(m - ref["qb_module"]) > 1e-6:
+        raise ValueError("mesh：%s 的模数 %g 和 %s 的模数 %g 不一样，啮合不上" % (g.name, m, ref.name, ref["qb_module"]))
+    zg, zr = g["qb_teeth"], ref["qb_teeth"]
+    tg, tr = g.get("qb_twist", 0.0), ref.get("qb_twist", 0.0)
+    pr = ref.matrix_world.translation.copy()
+    pg = g.matrix_world.translation.copy()
+    al = math.radians(angle)
+    phi_r = _spin_z(ref)
+
+    def set_spin(obj, phi):
+        obj.rotation_euler = Euler((0, 0, phi), "XYZ")
+        _update()
+
+    if kg == "gear" and kr == "gear":
+        if abs(tg * zg + tr * zr) > 1e-6:
+            raise ValueError("mesh：一对斜齿轮的螺旋角要大小相等、方向相反（一个 15，另一个 -15）；直齿轮只能配直齿轮")
+        a = m * (zg + zr) / 2
+        g.location = (pr.x + a * math.cos(al), pr.y + a * math.sin(al), pg.z)
+        # 在 ref 底面的高度上对齿：ref 的齿对着 g 的齿槽
+        k = (zr / (2 * math.pi)) * (phi_r - al) + 0.5
+        phi_g0 = al + math.pi - (2 * math.pi / zg) * k          # g 在 z = ref 底面处应有的齿相位
+        set_spin(g, phi_g0 - tg * (pr.z - pg.z))
+    elif kr == "ring_gear":
+        if abs(tg) > 1e-9:
+            raise ValueError("mesh：内齿圈是直齿的，里面只能配直齿轮")
+        if zg >= zr:
+            raise ValueError("mesh：里面的齿轮齿数 %d 要比内齿圈的齿数 %d 少" % (zg, zr))
+        a = m * (zr - zg) / 2
+        g.location = (pr.x + a * math.cos(al), pr.y + a * math.sin(al), pg.z)
+        set_spin(g, al + (zr / zg) * (phi_r - al))
+    else:                                   # g 是内齿圈，ref 是里面的齿轮
+        if abs(tr) > 1e-9:
+            raise ValueError("mesh：内齿圈是直齿的，里面只能配直齿轮")
+        a = m * (zg - zr) / 2
+        d = Vector((pr.x - pg.x, pr.y - pg.y))
+        if abs(d.length - a) > 0.05:
+            raise ValueError("mesh：%s 的中心离内齿圈 %s 的中心 %.2f mm，应该正好是 %g（= 模数 × 齿数差 / 2）。"
+                             "先把里面的齿轮摆到正确的中心距上" % (ref.name, g.name, d.length, a))
+        al2 = math.atan2(d.y, d.x)
+        set_spin(g, al2 + (zr / zg) * (phi_r - al2))
+    _update()
+    return g
+
+
+def mesh_worm(wheel, worm_obj, side="+y"):
+    """把蜗轮摆到蜗杆旁边并对好齿。要求：蜗杆已经放平，轴线沿 X（rot(worm, 0, 90, 0) 之后）；蜗轮轴线竖直。
+    side 是蜗轮在蜗杆的哪一侧：'+y' 或 '-y'。蜗轮的齿宽中面会对准蜗杆轴线的高度。蜗杆的位置不动。"""
+    if wheel.get("qb_kind") != "worm_wheel" or worm_obj.get("qb_kind") != "worm":
+        raise ValueError("mesh_worm(蜗轮, 蜗杆)：第一个要是 worm_wheel() 做的，第二个要是 worm() 做的")
+    if abs(wheel["qb_module"] - worm_obj["qb_module"]) > 1e-6 or wheel["qb_starts"] != worm_obj["qb_starts"]:
+        raise ValueError("mesh_worm：蜗轮和蜗杆的 module、starts 要一样")
+    if abs(wheel.get("qb_q", 0) * wheel["qb_module"] - worm_obj["qb_d"]) > 1e-6:
+        raise ValueError("mesh_worm：蜗轮和蜗杆的 q 要一样")
+    ax = _z_axis(worm_obj)
+    if abs(abs(ax.x) - 1) > 1e-4:
+        raise ValueError("mesh_worm：蜗杆的轴线要沿 X。先 rot(蜗杆, 0, 90, 0) 把它放平")
+    if abs(_z_axis(wheel).z) < 0.9999:
+        raise ValueError("mesh_worm：蜗轮的轴线要竖直（沿 Z）")
+    sg = side.strip().lower()
+    if sg not in ("+y", "-y"):
+        raise ValueError("mesh_worm 的 side 要写 '+y' 或 '-y'，现在是 %r" % side)
+    sgn = 1 if sg == "+y" else -1
+    m, zt = wheel["qb_module"], wheel["qb_teeth"]
+    a = (worm_obj["qb_d"] + m * zt) / 2
+    wb = bbox(worm_obj)
+    wheel_w = bbox(wheel)["size"][2]
+    cx, cy, cz = wb["center"]
+    wheel.location = (cx, cy + sgn * a, cz - wheel_w / 2)
+    _update()
+    # 对齿：在一个齿距里试着转蜗轮，取扎进去最少的角度（蜗杆的螺旋面没有简单的解析相位）
+    from runner import Geo, pair_relation
+    gw = Geo(worm_obj)
+    pitch = 2 * math.pi / zt
+    base = _spin_z(wheel)
+
+    def depth(phi):
+        wheel.rotation_euler = Euler((0, 0, phi), "XYZ")
+        _update()
+        return pair_relation(Geo(wheel), gw)[1]
+    best = min(((depth(base + pitch * k / 12), base + pitch * k / 12) for k in range(12)), key=lambda t: t[0])
+    for step in (pitch / 36, pitch / 108):
+        cand = [(depth(best[1] + s), best[1] + s) for s in (-step, step)]
+        best = min(cand + [best], key=lambda t: t[0])
+    wheel.rotation_euler = Euler((0, 0, best[1]), "XYZ")
+    _update()
+    if best[0] > 0.05:
+        raise ValueError("mesh_worm：怎么转都还扎进去 %.2f mm，蜗轮和蜗杆的参数配不上" % best[0])
+    return wheel
+
+
+def pulley(d, width, bore=0, belt_d=6, name=None):
+    """圆皮带轮。d 是皮带中心线所在的直径（算传动比用它），width 轮宽，bore 中心孔直径，belt_d 皮带的直径。
+    传动比 = 大轮 d / 小轮 d。轮缘上有一圈放皮带的圆弧槽。原点在底面中心，轴线沿 Z；皮带的中心线在高度 width / 2。"""
+    _check_pos(d=d, width=width, belt_d=belt_d)
+    if width < belt_d * 1.4:
+        raise ValueError("pulley 的轮宽 width=%s 太窄，至少要是皮带直径 belt_d=%s 的 1.4 倍" % (width, belt_d))
+    rb = belt_d / 2
+    rg = rb * 1.12                                   # 槽的圆弧比皮带略大，皮带只贴槽底
+    ro = d / 2 + rb * 0.5                            # 轮缘外圆
+    rc = d / 2 + (rg - rb)                           # 槽圆弧的圆心半径（槽底正好在 d/2 - rb）
+    if d / 2 - rb <= max(bore / 2, 0) + 1:
+        raise ValueError("pulley 的 d=%s 太小，放不下 belt_d=%s 的槽和 bore=%s 的孔" % (d, belt_d, bore))
+    half = math.sqrt(max(rg * rg - (ro - rc) ** 2, 0.0))
+    arc = []
+    for i in range(13):
+        t = -half + 2 * half * i / 12
+        arc.append((rc - math.sqrt(max(rg * rg - t * t, 0.0)), width / 2 + t))
+    rin = bore / 2 if bore and bore > 0 else 0.0
+    prof = [(rin, 0), (ro, 0)] + arc + [(ro, width), (rin, width)]
+    obj = revolve(prof, name=name or _auto_name("Pulley"))
+    obj["qb_kind"] = "pulley"
+    obj["qb_d"] = float(d)
+    obj["qb_belt"] = float(belt_d)
+    return obj
+
+
+def belt(p1, p2, name=None):
+    """绕在两个皮带轮上的圆皮带（开口传动）。p1、p2 是两个已经摆好位置的 pulley()，轴线都要竖直、槽在同一高度。
+    皮带的粗细和位置都从皮带轮上读，不用自己算。"""
+    for o in (p1, p2):
+        if o.get("qb_kind") != "pulley":
+            raise ValueError("belt(p1, p2)：两个都要是 pulley() 做出来的，%s 不是" % o.name)
+        if abs(_z_axis(o).z) < 0.9999:
+            raise ValueError("belt：皮带轮 %s 的轴线要竖直（沿 Z）。先装好皮带，再把整套一起转" % o.name)
+    if abs(p1["qb_belt"] - p2["qb_belt"]) > 1e-6:
+        raise ValueError("belt：两个皮带轮的 belt_d 不一样（%g 和 %g）" % (p1["qb_belt"], p2["qb_belt"]))
+    b1, b2 = bbox(p1), bbox(p2)
+    zc1, zc2 = b1["center"][2], b2["center"][2]
+    if abs(zc1 - zc2) > 0.05:
+        raise ValueError("belt：两个皮带轮的槽不在同一高度（%.2f 和 %.2f），皮带会歪。把它们的 z 对齐" % (zc1, zc2))
+    c1 = Vector((b1["center"][0], b1["center"][1]))
+    c2 = Vector((b2["center"][0], b2["center"][1]))
+    r1, r2 = p1["qb_d"] / 2, p2["qb_d"] / 2
+    dist = (c2 - c1).length
+    if dist <= r1 + r2 + p1["qb_belt"]:
+        raise ValueError("belt：两个皮带轮离得太近（中心距 %.1f），至少要大于 %.1f" % (dist, r1 + r2 + p1["qb_belt"]))
+    base = math.atan2((c2 - c1).y, (c2 - c1).x)
+    beta = math.asin((r1 - r2) / dist)               # 外公切线和连心线的夹角
+    pts = []
+    a0, a1 = base + math.pi / 2 - beta, base + 3 * math.pi / 2 + beta       # 轮 1 上的包角（背对轮 2 的一侧）
+    n1 = max(8, int((a1 - a0) / math.radians(3)))
+    for i in range(n1 + 1):
+        t = a0 + (a1 - a0) * i / n1
+        pts.append(Vector((c1.x + r1 * math.cos(t), c1.y + r1 * math.sin(t), zc1)))
+    b0, b1a = base - math.pi / 2 + beta, base + math.pi / 2 - beta          # 轮 2 上的包角
+    n2 = max(8, int((b1a - b0) / math.radians(3)))
+    for i in range(n2 + 1):
+        t = b0 + (b1a - b0) * i / n2
+        pts.append(Vector((c2.x + r2 * math.cos(t), c2.y + r2 * math.sin(t), zc1)))
+    clean = [pts[0]]
+    for q in pts[1:]:
+        if (q - clean[-1]).length > 1e-4:
+            clean.append(q)
+    if (clean[0] - clean[-1]).length < 1e-4:
+        clean.pop()
+    bm = _sweep(clean, [p1["qb_belt"] / 2], 16, closed=True)
+    obj = _finish(bm, name, "Belt", smooth=180)
+    obj["qb_kind"] = "belt"
+    return obj
+
+
+def bent_plate(points, width, t, bend_r=None, name=None):
+    """钣金折弯件。points = [(x, z), ...] 是从侧面看板厚中心线走的折线；width 是板宽（沿 Y，居中）；t 板厚；
+    bend_r 折弯内圆角半径（默认等于板厚）。例：bent_plate([(0, 0), (40, 0), (40, 30)], 20, 2) 是一个 L 形支架。
+    原点在世界原点（points 里的坐标就是世界坐标的 x 和 z）。"""
+    _check_pos(width=width, t=t)
+    r_in = t if bend_r is None else float(bend_r)
+    if r_in < 0:
+        raise ValueError("bent_plate 的 bend_r 不能是负数")
+    pts = [(float(p[0]), float(p[1])) for p in points]
+    if len(pts) < 2:
+        raise ValueError("bent_plate 的 points 至少要 2 个点")
+    for i in range(len(pts) - 1):
+        if math.dist(pts[i], pts[i + 1]) < 2 * (r_in + t) and len(pts) > 2:
+            raise ValueError("bent_plate：第 %d 段只有 %.1f 长，放不下两头的折弯（至少要 %.1f）。把这一段加长，或者把 bend_r 改小"
+                             % (i + 1, math.dist(pts[i], pts[i + 1]), 2 * (r_in + t)))
+    path = _fillet_path([(x, 0, z) for x, z in pts], r_in + t / 2, steps=8)
+    left, right = [], []
+    for i, p in enumerate(path):
+        a = path[max(i - 1, 0)]
+        b = path[min(i + 1, len(path) - 1)]
+        tg = (b - a).normalized()
+        nrm = Vector((-tg.z, 0, tg.x))
+        left.append((p.x + nrm.x * t / 2, p.z + nrm.z * t / 2))
+        right.append((p.x - nrm.x * t / 2, p.z - nrm.z * t / 2))
+    obj = extrude(left + list(reversed(right)), width, name=name or _auto_name("BentPlate"))
+    obj.data.transform(Matrix.Rotation(math.radians(90), 4, "X") @ Matrix.Translation((0, 0, -width / 2)))
+    obj.data.update()
+    _smooth(obj.data)
+    _update()
+    return obj
+
+
+def link_bar(p1, p2, width, t, hole_d=0, axis="y", name=None):
+    """连杆：两头是半圆的扁杆，两头各一个销孔。p1、p2 是两个销孔中心的世界坐标 (x, y, z)；width 杆宽；t 杆厚；
+    hole_d 销孔直径（0 就不打孔）；axis 是销子的方向，也就是机构转动的轴（默认 'y'：机构在 XZ 平面里动）。
+    物体的原点在 p1，所以绕原点转就是绕第一个销孔转。"""
+    _check_pos(width=width, t=t)
+    a, b = _as_vec3(p1, "p1"), _as_vec3(p2, "p2")
+    ax = _axis(axis)
+    d = b - a
+    d = d - ax * d.dot(ax)                    # 只看垂直于销子方向的分量
+    length = d.length
+    if length < 1e-6:
+        raise ValueError("link_bar 的两个销孔 p1、p2 重合了（或者只在销子方向上有差别）")
+    if hole_d and hole_d >= width:
+        raise ValueError("link_bar 的销孔 hole_d=%s 要比杆宽 width=%s 小" % (hole_d, width))
+    r = width / 2
+    pts = []
+    for i in range(17):
+        an = math.radians(-90 + 180 * i / 16)
+        pts.append((length + r * math.cos(an), r * math.sin(an)))
+    for i in range(17):
+        an = math.radians(90 + 180 * i / 16)
+        pts.append((r * math.cos(an), r * math.sin(an)))
+    obj = extrude(pts, t, name=name or _auto_name("LinkBar"))
+    obj.data.transform(Matrix.Translation((0, 0, -t / 2)))
+    obj.data.update()
+    if hole_d and hole_d > 0:
+        for x in (0.0, length):
+            c = cylinder(hole_d, t + 2, name=_auto_name("_pin"))
+            at(c, x, 0, -t / 2 - 1)
+            cut(obj, c)
+    xh = d.normalized()
+    yh = ax.cross(xh).normalized()
+    rot_m = Matrix((xh, yh, ax)).transposed().to_4x4()
+    obj.matrix_world = Matrix.Translation(a) @ rot_m
+    _update()
+    obj["qb_kind"] = "link"
     return obj
 
 

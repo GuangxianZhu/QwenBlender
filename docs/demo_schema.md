@@ -62,6 +62,42 @@ demo.json 决定网页演示的全部内容。页面骨架是固定的（讲解 
   `pause`：每次停顿的秒数。`delay`：开始前等几秒。`ease`：`smooth` 或 `linear`。
 - 一个零件可以有多条动画，按顺序叠加。
 
+## 连杆机构
+
+曲柄滑块和四连杆不用自己算，写一条动画，页面按几何关系解出每个零件的位置。
+坐标填模型里**初始姿态**下各个铰点的位置（就是 model.py 里用的那些数）。机构在垂直于 `axis` 的平面里运动。
+
+曲柄滑块（曲柄转，滑块沿直线走）：
+
+```json
+{"type": "crank_slider", "id": "m",
+ "crank": "Crank", "rod": "Rod", "slider": ["Piston", "PistonPin"],
+ "center": [0, 0, 0], "crank_pin": [15, 0, 0], "slider_pin": [0, 0, 58.09],
+ "axis": "y", "slide": "z", "speed": "rpm * 6"}
+```
+
+- `center` 曲柄的转动中心；`crank_pin` 曲柄和连杆的铰点；`slider_pin` 连杆和滑块的铰点。
+- `axis` 转动轴的方向（默认 `"y"`）；`slide` 滑块移动的方向（默认 `"z"`）。
+- 连杆长度 = crank_pin 到 slider_pin 的距离，要大于曲柄半径，不然转不了整圈（校验会指出来）。
+
+四连杆（曲柄 AB、连杆 BC、摇杆 DC，A 和 D 固定在机架上）：
+
+```json
+{"type": "four_bar", "id": "f",
+ "crank": "Crank", "coupler": "Coupler", "rocker": "Rocker",
+ "a": [0, 0, 0], "b": [0, 0, 20], "c": [60, 0, 45], "d": [70, 0, 0],
+ "axis": "y", "speed": "rpm * 6"}
+```
+
+两种都适用的：
+
+- `crank` `rod` `slider` `coupler` `rocker` 可以写一个零件名，也可以写一组（跟着一起动的零件，比如活塞和活塞销）。
+- `speed`（度/秒，一直转）和 `angle`（直接给角度，度，一般写一个滑条的 id）二选一。
+  曲柄转不了整圈的机构（双摇杆）只能用 `angle`，滑条范围取它能到的角度。
+- 写了 `id` 就多出几个可以放进读数的变量：`<id>_angle` 曲柄转角（度），`<id>_pos` 滑块位移（毫米，只有曲柄滑块有），
+  `<id>_rocker` 摇杆摆角（度，只有四连杆有）。例：`{"label": "活塞位置", "expr": "m_pos", "unit": "mm"}`。
+- 和曲柄同轴一起转的零件（飞轮、皮带轮）另外加一条 `spin`，speed 写成一样的。
+
 ## 表达式
 
 speed、by、turns、pitch、readouts 的 expr 可以写数字，也可以写带引号的算式：
@@ -73,6 +109,10 @@ speed、by、turns、pitch、readouts 的 expr 可以写数字，也可以写带
 - 转速 n 转/分 → speed = n × 6 度/秒。
 - 两个啮合的齿轮转向相反：从动轮 speed = −主动轮 speed × 主动齿数 / 从动齿数。
 - 螺纹：走的距离 = 圈数 × 螺距。
+- 皮带：两个轮转向相同，从动轮 speed = 主动轮 speed × 主动轮直径 / 从动轮直径。
+- 蜗轮蜗杆：蜗轮 speed = 蜗杆 speed × 头数 / 蜗轮齿数。
+- 行星轮系（内齿圈固定）：行星架 speed = 太阳轮 speed × 太阳轮齿数 / (太阳轮齿数 + 内齿圈齿数)；
+  行星轮写两条 spin：先一条绕太阳轮中心公转（`pivot` 写太阳轮中心，speed 同行星架），再一条绕自己转。
 
 ## 写法建议
 

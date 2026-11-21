@@ -92,6 +92,27 @@ def part_objects():
     return out
 
 
+def default_material(objs):
+    """没上材质的零件给一个中灰色，不然在浅色背景上是一片白，看不清形状。"""
+    m = None
+    for o in objs:
+        if any(x is not None for x in o.data.materials):
+            continue
+        if m is None:
+            m = bpy.data.materials.new("QB_default")
+            try:
+                m.use_nodes = True
+            except Exception:
+                pass
+            bsdf = next((n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+            if bsdf:
+                bsdf.inputs["Base Color"].default_value = (0.35, 0.37, 0.4, 1)
+                bsdf.inputs["Roughness"].default_value = 0.55
+            m.diffuse_color = (0.35, 0.37, 0.4, 1)
+        o.data.materials.clear()
+        o.data.materials.append(m)
+
+
 def sanitize_names(objs):
     used = set()
     for o in objs:
@@ -130,6 +151,7 @@ class Geo:
         self.area = sum(f.calc_area() for f in bm.faces)
         co = np.array([v.co[:] for v in bm.verts], dtype=np.float64)
         self.lo, self.hi = co.min(axis=0), co.max(axis=0)
+        bm.normal_update()          # 带孔的面是凹多边形，三角化之前法线要是对的，不然三角形会盖住孔
         bmesh.ops.triangulate(bm, faces=bm.faces)
         self.tris = len(bm.faces)
         # 采样点：全部顶点 + 按面积在三角形里均匀撒点。
@@ -746,6 +768,7 @@ def mode_build(job, a):
         rep["error"] = {"type": "Empty", "msg": "脚本跑完了，但场景里一个零件都没有", "line": None, "src": ""}
         return rep
     sanitize_names(objs)
+    default_material(objs)
     plan = None
     pp = os.path.join(job, "plan.json")
     if os.path.exists(pp):

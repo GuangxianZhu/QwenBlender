@@ -232,6 +232,10 @@
     S.step = i; S.stepT = 0;
     var st = cur();
     (st.anim || []).forEach(function (a) { a._ang = 0; });
+    steps().forEach(function (sx) { (sx.anim || []).forEach(function (a) {
+      if (a.id && (a.type === 'crank_slider' || a.type === 'four_bar'))
+        ['pos', 'angle', 'rocker'].forEach(function (k) { if (!((a.id + '_' + k) in S.params)) S.params[a.id + '_' + k] = 0; });
+    }); });
     S.exTarget = clamp01(+st.explode || 0);
     if (instant) S.ex = S.exTarget;
     $('ex').value = S.exTarget;
@@ -309,6 +313,64 @@
     return a.ease === 'linear' ? u : smooth(u);
   }
 
+  // ---------- 连杆机构（曲柄滑块、四连杆）。点和方向都是建模坐标，机构在垂直于 axis 的平面里运动。
+  function names(x) { return x == null ? [] : Array.isArray(x) ? x : [x]; }
+  function inPlane(v, n) { return v.clone().addScaledVector(n, -v.dot(n)); }
+  function signedAngle(u, v, n) { return Math.atan2(n.dot(new T.Vector3().crossVectors(u, v)), u.dot(v)); }
+  function rigid(list, from, to, q) {      // 让一组零件做刚体运动：先绕 from 点转 q，再把 from 点搬到 to
+    list.forEach(function (nm) {
+      var P = S.parts[nm];
+      if (!P) return;
+      P._p.sub(from).applyQuaternion(q).add(to);
+      P._q.premultiply(q);
+    });
+  }
+  function linkageAngle(a, w, dt) {
+    if (a.angle != null) return num(a.angle, w);
+    if (S.stepT > (+a.delay || 0)) a._ang = (a._ang || 0) + num(a.speed, w) * dt;
+    return a._ang || 0;
+  }
+  function setVar(a, key, val) { if (a.id) S.params[a.id + '_' + key] = val; }
+  function solveLinkage(a, w, dt) {
+    var n = axisVec(a.axis || 'y'), th = linkageAngle(a, w, dt) * Math.PI / 180;
+    var qc = new T.Quaternion().setFromAxisAngle(n, th);
+    if (a.type === 'crank_slider') {
+      var O = b2t(a.center), P0 = b2t(a.crank_pin), S0 = b2t(a.slider_pin), d = inPlane(axisVec(a.slide || 'z'), n).normalize();
+      var P = P0.clone().sub(O).applyQuaternion(qc).add(O);
+      var L = inPlane(S0.clone().sub(P0), n).length();
+      var wv = inPlane(S0.clone().sub(P), n), b = d.dot(wv), disc = b * b - wv.lengthSq() + L * L;
+      if (disc < 0) { err(w + '：连杆太短，曲柄转到这个角度时够不到滑块的导轨'); disc = 0; }
+      var b0 = d.dot(inPlane(S0.clone().sub(P0), n));
+      var sl = -b + (b0 >= 0 ? 1 : -1) * Math.sqrt(disc);
+      var Sp = S0.clone().addScaledVector(d, sl);
+      rigid(names(a.crank), O, O, qc);
+      var qr = new T.Quaternion().setFromAxisAngle(n, signedAngle(inPlane(S0.clone().sub(P0), n), inPlane(Sp.clone().sub(P), n), n));
+      rigid(names(a.rod), P0, P, qr);
+      names(a.slider).forEach(function (nm) { if (S.parts[nm]) S.parts[nm]._p.addScaledVector(d, sl); });
+      setVar(a, 'pos', sl); setVar(a, 'angle', ((th * 180 / Math.PI) % 360 + 360) % 360);
+    } else {
+      var A = b2t(a.a), B0 = b2t(a.b), C0 = b2t(a.c), D = b2t(a.d);
+      var B = B0.clone().sub(A).applyQuaternion(qc).add(A);
+      var r2 = inPlane(C0.clone().sub(B0), n).length(), r3 = inPlane(C0.clone().sub(D), n).length();
+      var bd = inPlane(D.clone().sub(B), n), dist = bd.length();
+      if (dist > r2 + r3 || dist < Math.abs(r2 - r3) || dist < 1e-9) {
+        err(w + '：四连杆转到这个角度装不上（两根杆够不着）。曲柄不能转整圈时，用 angle 配一个范围合适的滑条');
+        dist = Math.min(Math.max(dist, Math.abs(r2 - r3) + 1e-6), r2 + r3 - 1e-6);
+      }
+      var x = (dist * dist + r2 * r2 - r3 * r3) / (2 * dist), h = Math.sqrt(Math.max(r2 * r2 - x * x, 0));
+      var e1 = bd.clone().normalize(), e2 = new T.Vector3().crossVectors(n, e1);
+      var side0 = n.dot(new T.Vector3().crossVectors(inPlane(D.clone().sub(B0), n), inPlane(C0.clone().sub(B0), n))) >= 0 ? 1 : -1;
+      var C = B.clone().addScaledVector(e1, x).addScaledVector(e2, side0 * h);
+      C.addScaledVector(n, n.dot(C0) - n.dot(C));
+      rigid(names(a.crank), A, A, qc);
+      var qcp = new T.Quaternion().setFromAxisAngle(n, signedAngle(inPlane(C0.clone().sub(B0), n), inPlane(C.clone().sub(B), n), n));
+      rigid(names(a.coupler), B0, B, qcp);
+      var rk = signedAngle(inPlane(C0.clone().sub(D), n), inPlane(C.clone().sub(D), n), n);
+      rigid(names(a.rocker), D, D, new T.Quaternion().setFromAxisAngle(n, rk));
+      setVar(a, 'rocker', rk * 180 / Math.PI); setVar(a, 'angle', ((th * 180 / Math.PI) % 360 + 360) % 360);
+    }
+  }
+
   var _q = new T.Quaternion(), _v = new T.Vector3();
   function rotateAbout(pos, q, axis, deg, pivot) {
     _q.setFromAxisAngle(axis, deg * Math.PI / 180);
@@ -330,8 +392,9 @@
     });
     for (var i = 0; i < anims.length; i++) {
       var a = anims[i], P = S.parts[a.part];
-      if (!P) continue;
       var w = 'steps[' + S.step + '].anim[' + i + ']';
+      if (a.type === 'crank_slider' || a.type === 'four_bar') { solveLinkage(a, w, dt); continue; }
+      if (!P) continue;
       var piv = a.pivot ? b2t(a.pivot) : null;
       if (a.type === 'spin') {
         if (S.stepT > (+a.delay || 0)) a._ang = (a._ang || 0) + num(a.speed, w) * dt;
@@ -599,6 +662,15 @@
         if (bad.length) err('第 ' + (i + 1) + ' 步里这些东西的位置算成了 NaN：' + bad.join('、'));
         var st = cur(), mv = [];
         (st.anim || []).forEach(function (a) {
+          if (a.type === 'crank_slider' || a.type === 'four_bar') {
+            names(a.crank).concat(names(a.slider), names(a.rocker)).forEach(function (nm) {
+              if (!S.parts[nm] || a.angle != null) return;
+              var m1 = S.parts[nm].node.matrix.elements, m0 = before[nm].elements, same = true;
+              for (var k = 0; k < 16; k++) if (Math.abs(m1[k] - m0[k]) > 1e-9) same = false;
+              if (same) mv.push(nm);
+            });
+            return;
+          }
           if (a.type === 'blink' || !S.parts[a.part]) return;
           var same = true, e1 = S.parts[a.part].node.matrix.elements, e0 = before[a.part].elements;
           for (var k = 0; k < 16; k++) if (Math.abs(e1[k] - e0[k]) > 1e-9) same = false;

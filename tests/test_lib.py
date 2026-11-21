@@ -98,6 +98,33 @@ def main():
     assert any("穿模" in i for i in r["issues"]), r["issues"]          # 真穿进 join 件里的照样要报
     print("面贴面的 join 零件：孔里穿轴不误报，真穿模照样报")
 
+    # mesh()：任意起始角、任意方向、不同高度，直齿、斜齿、内齿圈都要对上；蜗轮蜗杆、皮带也不穿模
+    r = build(cfg, "from qblib import *\n"
+                   "g1 = helical_gear(2, 20, 12, 15); rot(g1, 0, 0, 7); g2 = helical_gear(2, 30, 12, -15); mesh(g2, g1, angle=40)\n"
+                   "s1 = spur_gear(2, 18, 10); at(s1, 200, 0, 3); rot(s1, 0, 0, 13); s2 = spur_gear(2, 27, 10); mesh(s2, s1, angle=200)\n"
+                   "sun = spur_gear(2, 18, 10); at(sun, 0, 300, 0); rot(sun, 0, 0, 3)\n"
+                   "ps = [mesh(spur_gear(2, 18, 10), sun, angle=120 * i + 20) for i in range(3)]\n"
+                   "ring = ring_gear(2, 54, 10, 124); at(ring, 0, 300, 0); mesh(ring, ps[0])\n"
+                   "r2 = ring_gear(2, 40, 8, 96); at(r2, 300, 300, 0); rot(r2, 0, 0, 5); p2 = spur_gear(2, 12, 8); mesh(p2, r2, angle=70)\n"
+                   "w = worm(2, 60); rot(w, 0, 90, 0); at(w, -230, 0, 40); ww = worm_wheel(2, 30, 14, bore=8); mesh_worm(ww, w)\n"
+                   "w2 = worm(3, 80, starts=2, q=8); rot(w2, 0, 90, 0); at(w2, -230, 300, 40)\n"
+                   "ww2 = worm_wheel(3, 24, 20, starts=2, q=8); mesh_worm(ww2, w2, side='-y')\n"
+                   "pa = pulley(30, 12, bore=8); at(pa, 0, -200, 0); pb = pulley(90, 12); at(pb, 110, -170, 0); bl = belt(pa, pb)\n", "mesh")
+    assert r.get("ok") and not r["issues"], (r.get("issues"), r.get("error"))
+    p = {x["name"]: x for x in r["parts"]}
+    assert p["HelicalGear_2"]["touches"] == ["HelicalGear_1"] and len(p["RingGear_1"]["touches"]) == 3
+    assert p["Gear_7"]["touches"] == ["RingGear_2"] and p["WormWheel_1"]["touches"] == ["Worm_1"]
+    assert p["WormWheel_2"]["touches"] == ["Worm_2"] and sorted(p["Belt_1"]["touches"]) == ["Pulley_1", "Pulley_2"]
+    r = build(cfg, "from qblib import *\ng1 = helical_gear(2, 20, 12, 15)\ng2 = helical_gear(2, 30, 12, 15)\nmesh(g2, g1)\n", "mesh_bad")
+    assert not r["ok"] and "方向相反" in r["error"]["msg"] and r["error"]["line"] == 4, r.get("error")
+    print("自动对齿 mesh / mesh_worm、皮带：都不穿模，参数配不上会报错")
+
+    # 转过方向的带孔零件：孔里穿销子不能误报（连杆）
+    r = build(cfg, "from qblib import *\nrod = link_bar((15, 0, 0), (0, 0, 58), 14, 4, hole_d=6.2)\n"
+                   "pin = cylinder(6, 8)\nrot(pin, 90, 0, 0)\nat(pin, 15, 4, 0)\n", "rodpin")
+    assert r.get("ok") and not r["issues"], r.get("issues")
+    print("转过方向的带孔零件：不误报")
+
     # 5) 出错信息带行号
     r = build(cfg, "from qblib import *\na = box(10, 10, 10)\nb = cylinder(-5, 10)\n", "err")
     assert not r["ok"] and r["error"]["line"] == 3 and "d" in r["error"]["msg"], r

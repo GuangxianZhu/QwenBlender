@@ -34,7 +34,7 @@
 
 想先看看能不能跑通，双击 `试跑.bat`：不用输入任何东西，它先自检，再让 Qwen 把同一个任务（C 形夹）做两遍：一遍没有工具、只回答一次，一遍用全套工具。全过程记在 `jobs/trial_log.txt`，对比结果在 `jobs/compare_时间/compare.md`。想换题目，把任务写进 `jobs/trial_task.txt` 再双击。
 
-菜单里的「自检」不需要 Qwen：把三个范例跑一遍，确认 Blender 和浏览器这条链路在这台电脑上是通的。第一次用先跑它。
+菜单里的「自检」不需要 Qwen：把范例跑一遍，确认 Blender 和浏览器这条链路在这台电脑上是通的。第一次用先跑它。
 
 需要：Ollama（里面有带 tools 和 vision 能力的 qwen 模型）、Blender 4.2 以上、Edge 或 Chrome。
 
@@ -61,33 +61,36 @@
 `blender/qblib.py`，model.py 里 `from qblib import *` 就能用。单位毫米，Z 朝上。
 
 - 基本体：`box` `rounded_box` `cylinder` `cone` `tube` `sphere` `torus` `prism` `extrude` `revolve` `pipe` `spring`
-- 机械件：`hex_bolt` `socket_screw` `nut` `screw_on` `washer` `threaded_rod` `spur_gear` `ring_gear` `bearing` `flange` `l_bracket`
+- 机械件：`hex_bolt` `socket_screw` `nut` `screw_on` `washer` `threaded_rod` `bearing` `flange` `l_bracket` `bent_plate` `link_bar`
+- 传动件：`spur_gear` `helical_gear` `ring_gear` `mesh` `worm` `worm_wheel` `mesh_worm` `pulley` `belt`
 - 加工：`union` `cut` `intersect` `hole` `holes_circle` `bevel` `chamfer`
 - 摆放：`at` `move` `rot` `rot_about` `stack` `beside` `center_on` `copy` `mirror_copy` `array_circular` `array_linear` `join`
 - 信息：`part` `mat` `color` `bbox` `allow_overlap` `allow_float`
 
 螺栓和螺母带真螺纹，`screw_on(螺母, 螺栓, grip=夹紧厚度)` 会把牙对上。
+齿轮用 `mesh(g, ref, angle)` 摆位置和对齿（直齿、斜齿、内齿圈），蜗轮蜗杆用 `mesh_worm`，皮带用 `belt(轮1, 轮2)` 自动绕上去。
 
 完整说明：`python -m qb help`，或者 `python -m qb help hex_bolt`。
 
 ## 网页演示
 
 页面骨架是固定的（`web/template.html` + `web/viewer.js`）：讲解、零件、爆炸、剖切四个标签，手机和电脑都能用。
-Qwen 只写一份 `demo.json`：讲解步骤、视角、高亮、标签、动画、滑条、读数。写法见 [docs/demo_schema.md](docs/demo_schema.md)。
+Qwen 只写一份 `demo.json`：讲解步骤、视角、高亮、标签、动画、滑条、读数。动画有转动、平移、螺旋，还有曲柄滑块和四连杆（页面自己解机构位置）。写法见 [docs/demo_schema.md](docs/demo_schema.md)。
 
 demo.json 做不到的效果（按公式移动零件、画箭头）再写 `custom.js`，接口见 [docs/custom_api.md](docs/custom_api.md)。
 
 ## 范例
 
-`examples/` 里有三个完整任务，也是 `search_examples` 的检索内容：
+`examples/` 里有四个完整任务，也是 `search_examples` 的检索内容：
 
 | 目录 | 内容 |
 |---|---|
 | `bolt_joint` | 螺栓连接：真螺纹、剖切、拧螺母的动画和圈数滑条 |
 | `gear_pair` | 齿轮减速：渐开线齿轮、转速滑条、联动读数 |
 | `pipe_flange` | 法兰连接：弯管、圆周螺栓，custom.js 画流动箭头和流速 |
+| `crank_slider` | 曲柄滑块：连杆、活塞、缸筒，机构动画和活塞位置读数 |
 
-`examples/snippets/` 是单项写法：带孔的板、圆周阵列、轴和轴承对位、自定义轮廓、车削体、布尔挖槽、镜像阵列、直接用 bmesh。
+`examples/snippets/` 是单项写法：带孔的板、圆周阵列、轴和轴承对位、自定义轮廓、车削体、布尔挖槽、镜像阵列、齿轮对齿、蜗轮蜗杆、皮带传动、钣金、连杆、直接用 bmesh。
 
 ## 配置
 
@@ -126,8 +129,9 @@ python -m qb fix <任务目录> "修改意见"
 
 ```
 python tests/test_lib.py          零件库：每个函数的结果都是封闭实体；尺寸、穿模、螺纹配合、报错行号
+python tests/test_page.py         网页配置校验：零件名、字段、表达式、连杆机构能不能装上
 python tests/test_agent_fake.py   工具循环：用按剧本回复的假 Ollama 走完整条链路
-python -m qb selftest             三个范例：建模 → 网页 → 浏览器检查
+python -m qb selftest             全部范例：建模 → 网页 → 浏览器检查
 ```
 
 ## 验证情况

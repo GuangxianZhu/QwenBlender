@@ -7,7 +7,7 @@
 - 零件库生成的每个零件都必须是封闭实体。
 - 工具返回给模型的文字：先给结论，再给数字，最后给下一步该调哪个工具。
 - 改了 `qb/tools.py`、`qb/agent.py`、`qb/ollama.py` 后运行 `python tests/test_agent_fake.py`。
-- 改了 `web/` 或 `qb/page.py` 后运行 `python -m qb selftest`。
+- 改了 `web/` 或 `qb/page.py` 后运行 `python tests/test_page.py` 和 `python -m qb selftest`。
 - 所有 `.bat` 只用 ASCII 字符，换行用 CRLF。实际逻辑在 `start.bat`，第一步是 `git pull`；`启动.bat` 和 `试跑.bat` 只负责调用它。
 - 只走 Ollama 原生接口 `/api/chat`。
 - `jobs/`、`cache/`、`config.json` 不提交。

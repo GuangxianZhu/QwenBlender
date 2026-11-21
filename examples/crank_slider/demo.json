@@ -1,0 +1,51 @@
+{
+  "title": "曲柄滑块：转动怎么变成往复",
+  "subtitle": "曲柄半径 15 mm，连杆 60 mm，行程 30 mm",
+  "params": [
+    {"id": "rpm", "label": "曲柄转速", "min": 0, "max": 60, "value": 20, "step": 1, "unit": "转/分"}
+  ],
+  "steps": [
+    {
+      "title": "1 整体",
+      "text": "下面是带偏心销的**曲柄**，上面是套在缸筒里的**活塞**，中间一根**连杆**把两者连起来。\n发动机、空压机、缝纫机里都是这套东西。",
+      "view": {"az": 25, "el": 12},
+      "ghost": ["Cylinder"]
+    },
+    {
+      "title": "2 拆开看",
+      "text": "连杆两头各有一个孔：大头套在曲柄销上，小头用活塞销和活塞连在一起。\n两头都能自由转，连杆本身不会变长变短。",
+      "view": {"az": 35, "el": 15},
+      "explode": 1,
+      "labels": [{"part": "Crank"}, {"part": "Rod"}, {"part": "Piston"}, {"part": "PistonPin"}, {"part": "Cylinder"}]
+    },
+    {
+      "title": "3 转起来",
+      "text": "曲柄销绕着主轴画圆。连杆大头跟着它走，小头却被缸筒管着，只能上下。\n于是曲柄转一圈，活塞正好上下一个来回。",
+      "view": "front",
+      "ghost": ["Cylinder"],
+      "anim": [
+        {"type": "crank_slider", "id": "m", "crank": "Crank", "rod": "Rod", "slider": ["Piston", "PistonPin"],
+         "center": [0, 0, 0], "crank_pin": [15, 0, 0], "slider_pin": [0, 0, 58.09], "axis": "y", "slide": "z", "speed": "rpm * 6"}
+      ],
+      "readouts": [
+        {"label": "曲柄转角", "expr": "m_angle", "unit": "°", "digits": 0},
+        {"label": "活塞位置", "expr": "m_pos", "unit": "mm", "digits": 1}
+      ]
+    },
+    {
+      "title": "4 行程是多少",
+      "text": "活塞最高点和最低点之间的距离叫**行程**，等于曲柄半径的 2 倍：2 × 15 = **30 mm**。\n连杆长短不改变行程，只改变活塞在中间走得匀不匀。",
+      "view": {"az": 15, "el": 8},
+      "ghost": ["Cylinder"],
+      "highlight": ["Piston"],
+      "anim": [
+        {"type": "crank_slider", "id": "m", "crank": "Crank", "rod": "Rod", "slider": ["Piston", "PistonPin"],
+         "center": [0, 0, 0], "crank_pin": [15, 0, 0], "slider_pin": [0, 0, 58.09], "axis": "y", "slide": "z", "speed": "rpm * 6"}
+      ],
+      "readouts": [
+        {"label": "活塞位置", "expr": "m_pos", "unit": "mm", "digits": 1},
+        {"label": "行程", "expr": "2 * 15", "unit": "mm", "digits": 0}
+      ]
+    }
+  ]
+}

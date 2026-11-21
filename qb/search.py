@@ -11,7 +11,8 @@ from .config import ROOT
 LIB = os.path.join(ROOT, "blender", "qblib.py")
 GROUPS = [
     ("基本体", "box rounded_box cylinder cone tube sphere torus prism extrude revolve pipe spring"),
-    ("机械件", "hex_bolt socket_screw nut screw_on washer threaded_rod spur_gear ring_gear bearing flange l_bracket"),
+    ("机械件", "hex_bolt socket_screw nut screw_on washer threaded_rod bearing flange l_bracket bent_plate link_bar"),
+    ("传动件", "spur_gear helical_gear ring_gear mesh worm worm_wheel mesh_worm pulley belt"),
     ("加工", "union cut intersect hole holes_circle bevel chamfer"),
     ("摆放", "at move rot rot_about stack beside center_on copy mirror_copy array_circular array_linear join delete"),
     ("信息", "bbox part mat color allow_overlap allow_float"),

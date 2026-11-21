@@ -3,6 +3,7 @@
 import base64
 import difflib
 import json
+import math
 import os
 import re
 
@@ -16,6 +17,12 @@ ANIM_FIELDS = {
     "move": {"need": ["part", "by"], "opt": ["time", "loop", "pause", "delay", "ease"]},
     "screw": {"need": ["part", "turns", "pitch"], "opt": ["axis", "pivot", "time", "loop", "pause", "delay", "ease"]},
     "blink": {"need": ["part"], "opt": ["time", "delay"]},
+}
+LINK_FIELDS = {
+    "crank_slider": {"need": ["crank", "rod", "slider", "center", "crank_pin", "slider_pin"],
+                     "opt": ["id", "axis", "slide", "speed", "angle", "delay"]},
+    "four_bar": {"need": ["crank", "coupler", "rocker", "a", "b", "c", "d"],
+                 "opt": ["id", "axis", "speed", "angle", "delay"]},
 }
 STEP_KEYS = {"title", "text", "view", "explode", "highlight", "ghost", "hide", "section", "labels", "anim", "readouts"}
 TOP_KEYS = {"title", "subtitle", "parts", "explode", "steps", "params", "readouts"}
@@ -102,6 +109,75 @@ class Check:
                 self.warn(where, "不认识的字段 %r，会被忽略%s" % (k, _near(k, allowed)))
 
 
+def _v3(v):
+    return [float(x) for x in v]
+
+
+def _axis_vec(a):
+    if isinstance(a, list):
+        n = math.sqrt(sum(float(x) ** 2 for x in a)) or 1.0
+        return [float(x) / n for x in a]
+    k = str(a).lower().strip()
+    sign = -1.0 if k.startswith("-") else 1.0
+    k = k.lstrip("+-")
+    return [sign * (k == "x"), sign * (k == "y"), sign * (k == "z")]
+
+
+def _sub(a, b):
+    return [a[i] - b[i] for i in range(3)]
+
+
+def _dot(a, b):
+    return sum(a[i] * b[i] for i in range(3))
+
+
+def _plane(v, n):
+    d = _dot(v, n)
+    return [v[i] - n[i] * d for i in range(3)]
+
+
+def _len(v):
+    return math.sqrt(_dot(v, v))
+
+
+def linkage_problem(a):
+    """连杆机构装不装得上。返回一句话的问题说明，没问题返回 None。只在曲柄连续转（用 speed）时检查整圈。"""
+    try:
+        n = _axis_vec(a.get("axis", "y"))
+        if a["type"] == "crank_slider":
+            o, p0, s0 = _v3(a["center"]), _v3(a["crank_pin"]), _v3(a["slider_pin"])
+            d = _plane(_axis_vec(a.get("slide", "z")), n)
+            if _len(d) < 1e-6:
+                return "slide（滑块移动方向）和 axis（转动轴）不能是同一个方向"
+            d = [x / _len(d) for x in d]
+            r = _len(_plane(_sub(p0, o), n))
+            L = _len(_plane(_sub(s0, p0), n))
+            off = _plane(_sub(s0, o), n)
+            e = math.sqrt(max(_dot(off, off) - _dot(off, d) ** 2, 0.0))       # 导轨离曲柄中心的偏距
+            if r < 1e-6:
+                return "crank_pin 和 center 重合了，曲柄半径是 0"
+            if L < 1e-6:
+                return "slider_pin 和 crank_pin 重合了，连杆长度是 0"
+            if "speed" in a and L < r + e - 1e-6:
+                return "连杆长度 %.1f 比「曲柄半径 %.1f + 导轨偏距 %.1f」还短，曲柄转不了整圈。把连杆加长，或者检查三个点的坐标" % (L, r, e)
+        else:
+            A, B, C, D = (_v3(a[k]) for k in "abcd")
+            r1 = _len(_plane(_sub(B, A), n))
+            r2 = _len(_plane(_sub(C, B), n))
+            r3 = _len(_plane(_sub(C, D), n))
+            r4 = _len(_plane(_sub(D, A), n))
+            if min(r1, r2, r3) < 1e-6:
+                return "a、b、c、d 里有两个点重合了"
+            if "speed" in a:
+                lens = sorted([r1, r2, r3, r4])
+                if lens[0] + lens[3] > lens[1] + lens[2] + 1e-6 or abs(lens[0] - r1) > 1e-6:
+                    return ("曲柄 %.1f、连杆 %.1f、摇杆 %.1f、机架 %.1f 这组长度，曲柄转不了整圈（要求曲柄最短，且最短 + 最长 ≤ 另外两根之和）。"
+                            "改杆长，或者不用 speed，改用 angle 配一个范围合适的滑条" % (r1, r2, r3, r4))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return None
+
+
 def validate(cfg, parts):
     """返回 (错误列表, 警告列表)。"""
     c = Check(parts)
@@ -132,6 +208,11 @@ def validate(cfg, parts):
                 c.err(w, "value=%s 不在 min~max（%s~%s）之间" % (val, lo, hi))
         except (TypeError, ValueError):
             c.err(w, "min / max / value 要是数字")
+    # 连杆机构的 id 会生成变量：<id>_pos（滑块位移，毫米）、<id>_angle（曲柄角，度）、<id>_rocker（摇杆摆角，度）
+    for st in cfg.get("steps", []) if isinstance(cfg.get("steps"), list) else []:
+        for a in (st.get("anim", []) if isinstance(st, dict) and isinstance(st.get("anim"), list) else []):
+            if isinstance(a, dict) and a.get("type") in LINK_FIELDS and isinstance(a.get("id"), str) and IDENT.fullmatch(a["id"]):
+                c.params.update({a["id"] + "_pos", a["id"] + "_angle", a["id"] + "_rocker"})
     # parts 覆盖
     over = cfg.get("parts", {})
     if not isinstance(over, dict):
@@ -235,8 +316,36 @@ def validate(cfg, parts):
                 c.err(wa, "要是 {…} 对象")
                 continue
             t = a.get("type")
+            if t in LINK_FIELDS:
+                spec = LINK_FIELDS[t]
+                c.unknown(wa, a, set(spec["need"]) | set(spec["opt"]) | {"type"})
+                miss = [k for k in spec["need"] if k not in a]
+                if miss:
+                    c.err(wa, "%s 还缺字段：%s" % (t, "、".join(miss)))
+                for k in ("crank", "rod", "slider", "coupler", "rocker"):
+                    if k in a:
+                        c.part_list(wa + "." + k, a[k] if isinstance(a[k], list) else [a[k]])
+                for k in ("center", "crank_pin", "slider_pin", "a", "b", "c", "d"):
+                    if k in a:
+                        c.vec3(wa + "." + k, a[k])
+                for k in ("axis", "slide"):
+                    if k in a:
+                        c.axis(wa + "." + k, a[k])
+                if ("speed" in a) == ("angle" in a):
+                    c.err(wa, "speed（一直转，度/秒）和 angle（直接给角度，度）要写一个，而且只写一个")
+                for k in ("speed", "angle"):
+                    if k in a:
+                        c.num(wa + "." + k, a[k])
+                if "id" in a and (not isinstance(a["id"], str) or not IDENT.fullmatch(a["id"])):
+                    c.err(wa + ".id", "id 要是字母开头的英文名")
+                if not miss and not c.errors:
+                    prob = linkage_problem(a)
+                    if prob:
+                        c.err(wa, prob)
+                continue
             if t not in ANIM_FIELDS:
-                c.err(wa + ".type", "没有 %r 这种动画%s。可用：%s" % (t, _near(t, ANIM_FIELDS), "、".join(ANIM_FIELDS)))
+                c.err(wa + ".type", "没有 %r 这种动画%s。可用：%s" % (
+                    t, _near(t, list(ANIM_FIELDS) + list(LINK_FIELDS)), "、".join(list(ANIM_FIELDS) + list(LINK_FIELDS))))
                 continue
             spec = ANIM_FIELDS[t]
             c.unknown(wa, a, set(spec["need"]) | set(spec["opt"]) | {"type"})
