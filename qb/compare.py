@@ -40,17 +40,21 @@ def _blocks(text):
     return (max(py, key=len) if py else ""), (max(html, key=len) if html else "")
 
 
-def run_baseline(cfg, model, task, job_dir, con):
-    """没有工具的一次性回答。返回结果字典。"""
+def run_baseline(cfg, model, task, job_dir, con, think=None):
+    """没有工具的一次性回答。返回结果字典。think=False 时关掉思考（思考太长会把上下文用完，一行代码都写不出来）。"""
     os.makedirs(os.path.join(job_dir, "out"), exist_ok=True)
     t0 = time.time()
-    resp = ollama.chat(cfg, model, [{"role": "user", "content": BASE_PROMPT.format(task=task)}], None, on_delta=con.delta)
+    resp = ollama.chat(cfg, model, [{"role": "user", "content": BASE_PROMPT.format(task=task)}], None,
+                       on_delta=con.delta, think=think)
     con.line("")
     secs = round(time.time() - t0)
     with open(os.path.join(job_dir, "reply.md"), "w", encoding="utf-8") as f:
         f.write(resp["content"])
     py, html = _blocks(resp["content"])
-    res = {"seconds": secs, "rounds": 1, "output_tokens": resp["output_tokens"], "has_py": bool(py), "has_html": bool(html)}
+    res = {"seconds": secs, "rounds": 1, "output_tokens": resp["output_tokens"], "has_py": bool(py), "has_html": bool(html),
+           "empty": not resp["content"].strip(), "think": think is not False}
+    if res["empty"]:
+        con.line("没有工具这一遍没有写出任何回答：思考用掉了 %d 个 token，把上下文占满了。" % resp["output_tokens"])
     if py:
         with open(os.path.join(job_dir, "model.py"), "w", encoding="utf-8", newline="\n") as f:
             f.write(py)
@@ -69,7 +73,9 @@ def run_baseline(cfg, model, task, job_dir, con):
 def _row(name, r):
     b = r.get("build") or {}
     pg = r.get("page") or {}
-    if not r.get("has_py", True):
+    if r.get("empty"):
+        model = "什么都没写出来（思考把上下文用完了）"
+    elif not r.get("has_py", True):
         model = "没写出脚本"
     elif not b.get("ok"):
         e = b.get("error", {})
@@ -85,7 +91,7 @@ def _row(name, r):
     return "| %s | %s 秒 | %s | %s | %s |" % (name, r.get("seconds", "?"), r.get("rounds", "?"), model, page)
 
 
-def main(cfg, task, model=None, con=None):
+def main(cfg, task, model=None, con=None, a_think=None):
     con = con or agent.Console()
     model = model or ollama.pick_model(cfg)
     root = os.path.join(cfg["jobs_dir"], time.strftime("compare_%Y%m%d_%H%M%S"))
@@ -95,9 +101,10 @@ def main(cfg, task, model=None, con=None):
         f.write(task)
     con.line("对比目录：%s\n模型：%s\n任务：%s" % (root, model, task))
 
-    con.line("\n===== A：没有工具（只回答一次）=====")
+    a_name = "A 没有工具" + ("（关思考）" if a_think is False else "")
+    con.line("\n===== %s（只回答一次）=====" % a_name)
     try:
-        a = run_baseline(cfg, model, task, a_dir, con)
+        a = run_baseline(cfg, model, task, a_dir, con, think=a_think)
     except ollama.OllamaError as e:
         con.line("A 出错：%s" % e)
         a = {"seconds": 0, "rounds": 1, "has_py": False, "has_html": False, "error": str(e)}
@@ -124,8 +131,8 @@ def main(cfg, task, model=None, con=None):
     json.dump(b, open(os.path.join(b_dir, "result.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
     lines = ["# 有工具和没有工具的对比", "", "任务：" + task, "", "模型：" + model, "",
-             "| 条件 | 用时 | 轮数 | 模型 | 网页 |", "|---|---|---|---|---|", _row("A 没有工具", a), _row("B 有工具", b), ""]
-    for tag, d, r in (("A 没有工具", "A_no_tools", a), ("B 有工具", "B_with_tools", b)):
+             "| 条件 | 用时 | 轮数 | 模型 | 网页 |", "|---|---|---|---|---|", _row(a_name, a), _row("B 有工具", b), ""]
+    for tag, d, r in ((a_name, "A_no_tools", a), ("B 有工具", "B_with_tools", b)):
         lines += ["## " + tag, ""]
         bd = r.get("build") or {}
         if bd.get("ok"):

@@ -352,7 +352,8 @@ def t_measure(job, a):
     if r:
         d = r["center_delta_b_minus_a"]
         state = "穿模，最深约 %.2f mm" % r["penetration"] if r["penetration"] > 0.05 else \
-            "接触" if r["gap"] <= 0.05 else "不接触，最近处相距约 %.2f mm" % r["gap"]
+            "接触" if r["gap"] <= 0.05 else "间隙配合，最近处相距约 %.2f mm" % r["gap"] if r["gap"] <= 0.25 else \
+            "不接触，最近处相距约 %.2f mm" % r["gap"]
         lines.append("%s 和 %s：%s。%s 的中心相对 %s 的中心偏移 %s。" % (a["a"], a["b"], state, a["b"], a["a"], _p(d)))
         if rep.get("note"):
             lines.append("（%s）" % rep["note"])

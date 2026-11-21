@@ -32,7 +32,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-TOL = 0.05          # 毫米：小于这个算接触 / 不算穿模
+TOL = 0.05          # 毫米：扎进去不到这么多不算穿模
+FIT = 0.25          # 毫米：间隙不超过这么多算接触（轴和孔的间隙配合一般留 0.1 ~ 0.2）
 MAX_SAMPLES = 3000  # 每个零件取多少个采样点
 
 
@@ -155,6 +156,7 @@ class Geo:
                 r1, r2 = math.sqrt(rnd.random()), rnd.random()
                 pts.append(p0 * (1 - r1) + p1 * (r1 * (1 - r2)) + p2 * (r1 * r2))
         self.pts = pts
+        self.tri = np.array([[v.co[:] for v in f.verts] for f in bm.faces], dtype=np.float64).reshape(-1, 3, 3)
         self.bvh = BVHTree.FromBMesh(bm)
         bm.free()
 
@@ -166,7 +168,9 @@ class Geo:
                                                (0.7193, -0.6191, -0.3157))]
 
     def inside(self, p):
-        """射线奇偶法判断点是否在实体内部（网格封闭时才可靠）。射线正好擦过棱时会数错，所以打三条取多数。"""
+        """点是否在实体内部（网格封闭时才可靠）。
+        先用射线奇偶法快速判断（三条射线取多数）；它说「在里面」时再用绕数复核一遍：
+        join 出来的零件里，两个壳贴在一起的面是重合的，射线会少数一次，绕数不受影响。"""
         votes = 0
         for d in self._DIRS:
             o = Vector(p)
@@ -178,7 +182,18 @@ class Geo:
                 n += 1
                 o = hit[0] + d * 1e-4
             votes += n % 2
-        return votes >= 2
+        if votes < 2:
+            return False
+        return abs(self.winding(p)) > 0.5
+
+    def winding(self, p):
+        """广义绕数：把每个三角形对这个点张的立体角加起来，除以 4π。在实体里面约等于 1，外面约等于 0。"""
+        v = self.tri - np.array(p, dtype=np.float64)
+        a, b, c = v[:, 0], v[:, 1], v[:, 2]
+        la, lb, lc = np.linalg.norm(a, axis=1), np.linalg.norm(b, axis=1), np.linalg.norm(c, axis=1)
+        num = np.einsum("ij,ij->i", a, np.cross(b, c))
+        den = la * lb * lc + np.einsum("ij,ij->i", a, b) * lc + np.einsum("ij,ij->i", b, c) * la + np.einsum("ij,ij->i", c, a) * lb
+        return float(np.sum(2 * np.arctan2(num, den)) / (4 * math.pi))
 
 
 def bbox_gap(a, b):
@@ -191,7 +206,7 @@ def pair_relation(a, b):
     gap = float("inf")
     pen = 0.0
     for p_src, q in ((a, b), (b, a)):
-        lo, hi = q.lo - TOL, q.hi + TOL
+        lo, hi = q.lo - FIT, q.hi + FIT
         for p in p_src.pts:
             near = q.bvh.find_nearest(p)
             if near[0] is None:
@@ -291,7 +306,7 @@ def measure_all(objs, plan=None):
         for j in range(i + 1, n):
             a, b = geos[i], geos[j]
             bg = bbox_gap(a, b)
-            if bg > TOL:
+            if bg > FIT:
                 gap, pen = bg, 0.0
             elif threaded_fit(a, b):
                 gap, pen = 0.0, 0.0
@@ -314,7 +329,7 @@ def measure_all(objs, plan=None):
                                   "给被穿过的零件用 hole() 打孔，然后删掉这条 allow_overlap" % (a.name, b.name, pen))
                 else:
                     warns.append("已声明允许重叠：%s 和 %s（约 %.2f mm）" % (a.name, b.name, pen))
-            elif gap <= TOL:
+            elif gap <= FIT:
                 contact[a.name].append(b.name)
                 contact[b.name].append(a.name)
 
@@ -817,7 +832,7 @@ def mode_measure(job, a):
             "volume": round(abs(x.volume), 1), "area": round(x.area, 1), "closed": x.closed, "faces": x.nfaces})
     if len(g) == 2:
         A, B = g
-        if bbox_gap(A, B) > TOL:
+        if bbox_gap(A, B) > FIT:
             gap, pen = bbox_gap(A, B), 0.0
         elif threaded_fit(A, B):
             gap, pen = 0.0, 0.0

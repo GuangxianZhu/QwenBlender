@@ -44,6 +44,14 @@ def main(cfg, task=None):
     tf = os.path.join(cfg["jobs_dir"], "trial_task.txt")      # 想换题目：把任务写进 jobs/trial_task.txt
     if not task and os.path.exists(tf):
         task = open(tf, encoding="utf-8-sig").read().strip() or None
+    opts = {}                                                 # 可选：jobs/trial_options.json
+    of = os.path.join(cfg["jobs_dir"], "trial_options.json")  # {"selftest": false, "a_think": false}
+    if os.path.exists(of):
+        try:
+            import json
+            opts = json.load(open(of, encoding="utf-8-sig"))
+        except Exception:  # noqa
+            opts = {}
     log = os.path.join(cfg["jobs_dir"], "trial_log.txt")
     old = sys.stdout
     sys.stdout = Tee(old, log)
@@ -51,16 +59,17 @@ def main(cfg, task=None):
     try:
         print("试跑开始 %s  %s  Python %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), platform.platform(), platform.python_version()))
         model = menu.status(cfg)
-        print("\n===== 第一部分：自检（不用 Qwen）=====")
-        ok = selftest.main(cfg)
-        print("TRIAL_SELFTEST %s" % ("ok" if ok else "failed"))
+        if opts.get("selftest", True):
+            print("\n===== 第一部分：自检（不用 Qwen）=====")
+            ok = selftest.main(cfg)
+            print("TRIAL_SELFTEST %s" % ("ok" if ok else "failed"))
         if model is None:
             print("Ollama 连不上或没有 qwen 模型，第二部分跳过。")
             result = "no_model"
             return False
         print("\n===== 第二部分：同一个任务，没有工具和有工具各做一遍 =====")
         from . import compare
-        root, a, b = compare.main(cfg, task or TASK, model=model)
+        root, a, b = compare.main(cfg, task or TASK, model=model, a_think=opts.get("a_think"))
         result = "finished" if b.get("finished") else "stopped"
         return bool(b.get("finished"))
     except ollama.OllamaError as e:

@@ -87,6 +87,17 @@ def main():
     assert any("穿模" in i for i in r["issues"]), r["issues"]
     print("行星轮系：相位对了不穿模，没对会被查出来")
 
+    # join 出来的零件（几个壳面贴面）：轴从它的孔里穿过，不能误报穿模
+    r = build(cfg, "from qblib import *\nplate = cylinder(84, 4)\nat(plate, 0, 0, 13)\nhole(plate, 12.4, (0, 0, 17))\n"
+                   "boss = cylinder(16, 4)\nat(boss, 0, 0, 17)\nhole(boss, 12.4, (0, 0, 21))\n"
+                   "pin = cylinder(8, 13)\nat(pin, 36, 0, 0)\ncarrier = join([pin, plate, boss])\n"
+                   "shaft = cylinder(8, 26)\ntube12 = tube(12, 8.4, 41)\nat(tube12, 0, 0, -20)\n"
+                   "g = spur_gear(2, 18, 12, bore=12.4)\n", "shells")
+    assert r.get("ok") and not r["issues"], r.get("issues")
+    r = build(cfg, "from qblib import *\na = join([box(20, 20, 5), at(box(20, 20, 5), 0, 0, 5)])\nc = cylinder(6, 30)\nat(c, 0, 0, -10)\n", "shells2")
+    assert any("穿模" in i for i in r["issues"]), r["issues"]          # 真穿进 join 件里的照样要报
+    print("面贴面的 join 零件：孔里穿轴不误报，真穿模照样报")
+
     # 5) 出错信息带行号
     r = build(cfg, "from qblib import *\na = box(10, 10, 10)\nb = cylinder(-5, 10)\n", "err")
     assert not r["ok"] and r["error"]["line"] == 3 and "d" in r["error"]["msg"], r
