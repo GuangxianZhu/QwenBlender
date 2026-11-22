@@ -7,9 +7,10 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from qb import page  # noqa: E402
+from qb import page, tools  # noqa: E402
 
-PARTS = [{"name": n} for n in ("Crank", "Rod", "Piston", "PistonPin", "Cylinder")]
+PARTS = [{"name": n, "center": c} for n, c in (("Crank", [0, -12, 0]), ("Rod", [7.5, 0, 29]), ("Piston", [0, 0, 61]),
+                                              ("PistonPin", [0, 0, 58.09]), ("Cylinder", [10, 0, 5]))]
 GOOD = json.load(open(os.path.join(ROOT, "examples", "crank_slider", "demo.json"), encoding="utf-8"))
 
 
@@ -44,6 +45,28 @@ def main():
     assert any("转不了整圈" in e for e in errs(c)), errs(c)                                # 曲柄太长
     c["steps"][0]["anim"][0].pop("speed"); c["steps"][0]["anim"][0]["angle"] = "ang"
     assert errs(c) == [], errs(c)                                                        # 改成用滑条给角度就可以
+
+    # 铰点、pivot 可以直接写零件名
+    assert link(GOOD)["slider_pin"] == "PistonPin" and link(page.resolve_points(GOOD, PARTS))["slider_pin"] == [0, 0, 58.09]
+    assert link(GOOD)["slider_pin"] == "PistonPin"                                       # 原来的配置不动
+    c = copy.deepcopy(GOOD); link(c)["slider_pin"] = "PistonPinn"
+    assert any("PistonPinn" in e and "PistonPin" in e for e in errs(c)), errs(c)         # 名字写错
+    c = copy.deepcopy(GOOD); link(c)["slider_pin"] = "Cylinder"
+    assert any("转不了整圈" in e for e in errs(c)), errs(c)                                # 按零件中心算出来连杆太短
+    c = copy.deepcopy(GOOD); link(c)["hollow"] = True
+    c["steps"][2]["anim"].append({"part": "Crank", "type": "spin", "speed": 3, "pivot": "PistonPin", "hollow": True})
+    e, w = page.validate(c, PARTS)
+    assert e == [] and not any("hollow" in x for x in w), (e, w)
+
+    # 网页里写的摆角、行程，要和算出来的一致
+    tn = lambda text, rg, parts=(): tools.text_number_problems({"steps": [{"title": "s", "text": text}]}, list(parts), [rg])
+    assert tn("摇臂在 56° 到 113° 之间摆，摆角约 57°。", {"swing": [67.8]})
+    assert not tn("摆角约 68°，初始摆角 0°。", {"swing": [67.8]}) and not tn("摆角从 -5.9° 到 +61.9°。", {"swing": [67.8]})
+    assert not tn("摆角 51° ~ 119°", {"swing": [67.8]}) and not tn("曲柄转一圈，转速 10 转/分", {"swing": [67.8]})
+    assert tn("活塞的行程是 30 毫米", {"stroke": [39.8]}) and not tn("行程 40 mm", {"stroke": [39.8]})
+    assert tn("x", {"swing": [67.8]}, [{"name": "Rocker", "info": "摆角约 57°"}])
+    assert tools.text_number_problems({"steps": [{"title": "s", "text": "x", "readouts": [
+        {"label": "摆角范围", "expr": "57", "unit": "°"}, {"label": "摆角", "expr": "f_rocker", "unit": "°"}]}]}, [], [{"swing": [67.8]}])
 
     c = copy.deepcopy(GOOD); c["steps"][2]["anim"].append({"part": "Crank", "type": "spinn", "speed": 3})
     assert any("spinn" in e and "spin" in e for e in errs(c)), errs(c)

@@ -50,7 +50,7 @@
 | `measure` | 量一个零件，或两个零件之间的间隙、穿入深度、中心距 |
 | `list_parts` | 列出零件名，写网页配置前用 |
 | `build_page` | 校验 demo.json（零件名、动画字段、表达式），生成网页 |
-| `check_page` | 浏览器打开：控制台报错、每一步能不能跑、动画动没动、手机上溢不溢出，返回截图；再把每一步的动画摆到几个时刻，查零件动起来以后会不会互相穿模（转向反了、速比不对、连杆撞到别的零件） |
+| `check_page` | 浏览器打开：控制台报错、每一步能不能跑、动画动没动、手机上溢不溢出，返回截图；再让动画真的走起来：动起来以后会不会穿模（转向反了、速比不对、连杆撞到别的零件）、贴着的零件会不会离开、铰点上有没有销子、转轴上有没有轴、文字里的摆角和行程对不对，并返回运动范围 |
 | `lib_help` | 查零件库函数的写法 |
 | `search_examples` | 搜范例代码 |
 | `search_bpy` | 查本机 Blender 版本的 API |
@@ -64,11 +64,14 @@
 - 机械件：`hex_bolt` `socket_screw` `nut` `screw_on` `washer` `threaded_rod` `bearing` `flange` `l_bracket` `bent_plate` `link_bar`
 - 传动件：`spur_gear` `helical_gear` `ring_gear` `mesh` `worm` `worm_wheel` `mesh_worm` `pulley` `belt`
 - 加工：`union` `cut` `intersect` `hole` `holes_circle` `bevel` `chamfer`
-- 摆放：`at` `move` `rot` `rot_about` `stack` `beside` `center_on` `copy` `mirror_copy` `array_circular` `array_linear` `join`
+- 铰接：`pin_joint` `shaft_through`
+- 摆放：`at` `move` `rot` `rot_about` `aim` `on_axis` `stack` `beside` `center_on` `copy` `mirror_copy` `array_circular` `array_linear` `join`
 - 信息：`part` `mat` `color` `bbox` `allow_overlap` `allow_float`
 
 螺栓和螺母带真螺纹，`screw_on(螺母, 螺栓, grip=夹紧厚度)` 会把牙对上。
 齿轮用 `mesh(g, ref, angle)` 摆位置和对齿（直齿、斜齿、内齿圈），蜗轮蜗杆用 `mesh_worm`，皮带用 `belt(轮1, 轮2)` 自动绕上去。
+`pin_joint(a, b, 铰点, 直径)` 给两个零件打孔并做出销子，`shaft_through([零件], 起点, 终点, 直径)` 做一根轴并把它穿过的零件打好孔。
+`aim(零件, 起点, 终点)` 让零件从一点指向另一点，`on_axis(零件, 轴, pos)` 把零件套到一根轴上，都不用算旋转角。
 
 完整说明：`python -m qb help`，或者 `python -m qb help hex_bolt`。
 

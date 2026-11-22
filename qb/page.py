@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """demo.json 校验 + 拼成单文件 index.html。"""
 import base64
+import copy
 import difflib
 import json
 import math
@@ -12,7 +13,7 @@ from .config import ROOT
 WEB = os.path.join(ROOT, "web")
 VIEWS = ("front", "back", "right", "left", "top", "bottom", "iso", "iso2")
 ANIM_FIELDS = {
-    "spin": {"need": ["part", "speed"], "opt": ["axis", "pivot", "delay"]},
+    "spin": {"need": ["part", "speed"], "opt": ["axis", "pivot", "delay", "hollow"]},
     "turn": {"need": ["part", "by"], "opt": ["axis", "pivot", "time", "loop", "pause", "delay", "ease"]},
     "move": {"need": ["part", "by"], "opt": ["time", "loop", "pause", "delay", "ease"]},
     "screw": {"need": ["part", "turns", "pitch"], "opt": ["axis", "pivot", "time", "loop", "pause", "delay", "ease"]},
@@ -20,10 +21,11 @@ ANIM_FIELDS = {
 }
 LINK_FIELDS = {
     "crank_slider": {"need": ["crank", "rod", "slider", "center", "crank_pin", "slider_pin"],
-                     "opt": ["id", "axis", "slide", "speed", "angle", "delay"]},
+                     "opt": ["id", "axis", "slide", "speed", "angle", "delay", "hollow"]},
     "four_bar": {"need": ["crank", "coupler", "rocker", "a", "b", "c", "d"],
-                 "opt": ["id", "axis", "speed", "angle", "delay"]},
+                 "opt": ["id", "axis", "speed", "angle", "delay", "hollow"]},
 }
+POINT_KEYS = ("pivot", "center", "crank_pin", "slider_pin", "a", "b", "c", "d")
 STEP_KEYS = {"title", "text", "view", "explode", "highlight", "ghost", "hide", "section", "labels", "anim", "readouts"}
 TOP_KEYS = {"title", "subtitle", "parts", "explode", "steps", "params", "readouts"}
 MATH = set("abs acos asin atan atan2 ceil cos exp floor log max min pow round sign sin sqrt tan PI E hypot trunc".split())
@@ -35,9 +37,24 @@ def _near(name, pool):
     return "（是不是想写 %s？）" % " 或 ".join(m) if m else ""
 
 
+def resolve_points(cfg, parts):
+    """动画里写成零件名的点（铰点、转轴上的点），换成那个零件的中心坐标。返回新的配置，原来的不动。"""
+    centers = {p["name"]: p.get("center") for p in parts}
+    out = copy.deepcopy(cfg)
+    for s in out.get("steps", []) if isinstance(out, dict) and isinstance(out.get("steps"), list) else []:
+        for a in s.get("anim", []) if isinstance(s, dict) and isinstance(s.get("anim"), list) else []:
+            if not isinstance(a, dict):
+                continue
+            for k in POINT_KEYS:
+                if isinstance(a.get(k), str) and centers.get(a[k]):
+                    a[k] = [float(c) for c in centers[a[k]]]
+    return out
+
+
 class Check:
     def __init__(self, parts):
         self.parts = [p["name"] for p in parts]
+        self.centers = {p["name"]: p.get("center") for p in parts}
         self.errors, self.warnings = [], []
         self.params = set()
 
@@ -102,6 +119,13 @@ class Check:
             elif isinstance(c, bool) or not isinstance(c, (int, float)):
                 self.err(where, "要写 [x, y, z] 三个数（毫米），现在是 %r" % (v,))
                 return
+
+    def point(self, where, v):
+        """一个点：[x, y, z]，或者一个零件名（用那个零件的中心，销子、轴最合适）。"""
+        if isinstance(v, str):
+            self.part(where, v)
+            return
+        self.vec3(where, v)
 
     def unknown(self, where, d, allowed):
         for k in d:
@@ -327,7 +351,7 @@ def validate(cfg, parts):
                         c.part_list(wa + "." + k, a[k] if isinstance(a[k], list) else [a[k]])
                 for k in ("center", "crank_pin", "slider_pin", "a", "b", "c", "d"):
                     if k in a:
-                        c.vec3(wa + "." + k, a[k])
+                        c.point(wa + "." + k, a[k])
                 for k in ("axis", "slide"):
                     if k in a:
                         c.axis(wa + "." + k, a[k])
@@ -339,7 +363,11 @@ def validate(cfg, parts):
                 if "id" in a and (not isinstance(a["id"], str) or not IDENT.fullmatch(a["id"])):
                     c.err(wa + ".id", "id 要是字母开头的英文名")
                 if not miss and not c.errors:
-                    prob = linkage_problem(a)
+                    ar = dict(a)
+                    for k in POINT_KEYS:
+                        if isinstance(ar.get(k), str):
+                            ar[k] = c.centers.get(ar[k])
+                    prob = linkage_problem(ar)
                     if prob:
                         c.err(wa, prob)
                 continue
@@ -357,7 +385,7 @@ def validate(cfg, parts):
             if "axis" in a:
                 c.axis(wa + ".axis", a["axis"])
             if "pivot" in a:
-                c.vec3(wa + ".pivot", a["pivot"])
+                c.point(wa + ".pivot", a["pivot"])
             if t == "move" and "by" in a:
                 c.vec3(wa + ".by", a["by"], expr=True)
             if t == "turn" and "by" in a:
@@ -425,7 +453,7 @@ def build(job):
         return {"ok": False, "errors": errors, "warnings": warnings}
     with open(os.path.join(out, "model.glb"), "rb") as f:
         glb = base64.b64encode(f.read()).decode("ascii")
-    data = json.dumps({"config": cfg, "parts": parts, "glb": glb}, ensure_ascii=False).replace("</", "<\\/")
+    data = json.dumps({"config": resolve_points(cfg, parts), "parts": parts, "glb": glb}, ensure_ascii=False).replace("</", "<\\/")
     html = _read("template.html")
     html = html.replace("__QB_TITLE__", str(cfg.get("title", "演示")).replace("<", "&lt;"))
     for mark, text in (("/*__QB_THREE__*/", _read(os.path.join("vendor", "three.bundle.min.js"))),

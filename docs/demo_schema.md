@@ -49,7 +49,7 @@ demo.json 决定网页演示的全部内容。页面骨架是固定的（讲解 
 
 | type | 作用 | 必填 | 可选 |
 |---|---|---|---|
-| `spin` | 一直转 | part, speed（度/秒） | axis, pivot, delay |
+| `spin` | 一直转 | part, speed（度/秒） | axis, pivot, delay, hollow |
 | `turn` | 转过一个角度 | part, by（度） | axis, pivot, time, loop, pause, delay, ease |
 | `move` | 平移 | part, by（[dx,dy,dz] 毫米） | time, loop, pause, delay, ease |
 | `screw` | 边转边走（螺纹） | part, turns（圈数）, pitch（螺距） | axis, pivot, time, loop, pause, delay, ease |
@@ -57,7 +57,8 @@ demo.json 决定网页演示的全部内容。页面骨架是固定的（讲解 
 
 - `axis`：`"x"` `"y"` `"z"`，可以带负号（`"-z"`），或者 `[x,y,z]`。默认 `"z"`。转动方向按右手定则。
   screw 的前进方向就是 axis 的方向。
-- `pivot`：转动中心 `[x,y,z]`。不写就绕零件自己的原点转。
+- `pivot`：转动中心，写 `[x,y,z]`，或者写一个零件名（用那个零件的中心，一般写轴或销子）。不写就绕零件自己的原点转。
+- `hollow`：`true` 表示这个零件本来就是空心的、轴线上不需要有轴（不写的话，转轴上是空的会被检查报出来）。
 - `time`：一次动作的秒数（默认 2）。`loop`：`once` 只做一次，`repeat` 重复，`pingpong` 来回。
   `pause`：每次停顿的秒数。`delay`：开始前等几秒。`ease`：`smooth` 或 `linear`。
 - 一个零件可以有多条动画，按顺序叠加。
@@ -65,14 +66,15 @@ demo.json 决定网页演示的全部内容。页面骨架是固定的（讲解 
 ## 连杆机构
 
 曲柄滑块和四连杆不用自己算，写一条动画，页面按几何关系解出每个零件的位置。
-坐标填模型里**初始姿态**下各个铰点的位置（就是 model.py 里用的那些数）。机构在垂直于 `axis` 的平面里运动。
+铰点填模型里**初始姿态**下的位置：直接写销子或轴的零件名（用它的中心，推荐），或者写 `[x,y,z]`。机构在垂直于 `axis` 的平面里运动。
+model.py 里用 `pin_joint` 做铰点、用 `shaft_through` 做固定转轴，构建报告会列出它们的名字。
 
 曲柄滑块（曲柄转，滑块沿直线走）：
 
 ```json
 {"type": "crank_slider", "id": "m",
  "crank": "Crank", "rod": "Rod", "slider": ["Piston", "PistonPin"],
- "center": [0, 0, 0], "crank_pin": [15, 0, 0], "slider_pin": [0, 0, 58.09],
+ "center": [0, 0, 0], "crank_pin": [15, 0, 0], "slider_pin": "PistonPin",
  "axis": "y", "slide": "z", "speed": "rpm * 6"}
 ```
 
@@ -84,14 +86,15 @@ demo.json 决定网页演示的全部内容。页面骨架是固定的（讲解 
 
 ```json
 {"type": "four_bar", "id": "f",
- "crank": "Crank", "coupler": "Coupler", "rocker": "Rocker",
- "a": [0, 0, 0], "b": [0, 0, 20], "c": [60, 0, 45], "d": [70, 0, 0],
+ "crank": ["Crank", "PinB"], "coupler": "Coupler", "rocker": ["Rocker", "PinC"],
+ "a": "ShaftA", "b": "PinB", "c": "PinC", "d": "ShaftD",
  "axis": "y", "speed": "rpm * 6"}
 ```
 
 两种都适用的：
 
 - `crank` `rod` `slider` `coupler` `rocker` 可以写一个零件名，也可以写一组（跟着一起动的零件，比如活塞和活塞销）。
+  销子要写进它跟着动的那一组；固定在机架上的转轴不用写进任何一组。
 - `speed`（度/秒，一直转）和 `angle`（直接给角度，度，一般写一个滑条的 id）二选一。
   曲柄转不了整圈的机构（双摇杆）只能用 `angle`，滑条范围取它能到的角度。
 - 写了 `id` 就多出几个可以放进读数的变量：`<id>_angle` 曲柄转角（度），`<id>_pos` 滑块位移（毫米，只有曲柄滑块有），
@@ -116,12 +119,16 @@ speed、by、turns、pitch、readouts 的 expr 可以写数字，也可以写带
 
 ## 运动检查
 
-check_page 会把每一步的动画摆到几个时刻（`angle` 由滑条给的连杆会把滑条从最小扫到最大），检查零件动起来以后有没有互相穿模。
-报出来的常见原因：
+check_page 会把每一步的动画摆到几个时刻（`angle` 由滑条给的连杆会把滑条从最小扫到最大），检查：
 
-- 齿轮、蜗轮蜗杆：转向反了，或者速比和齿数对不上。
-- 连杆：`center` `crank_pin` `a` `b` 这些点和模型里铰点的真实位置不一样。
-- 运动的零件路上有别的零件挡着：回 model.py 给它开槽或者挪开。
+- 动起来以后有没有互相穿模。常见原因——齿轮、蜗轮蜗杆：转向反了，或者速比和齿数对不上；
+  连杆：铰点和模型里的真实位置不一样；运动的零件路上有别的零件挡着，回 model.py 给它开槽或者挪开。
+- 连杆的铰点上有没有销子把两组零件连着；转动零件的转轴上有没有轴。缺了就回 model.py 用 `pin_joint` / `shaft_through` 补。
+- 静止时贴着的两个零件（刮片和玻璃、滑块和导轨），动起来以后还贴不贴。完全离开算问题，探出去一部分给提醒。
+- 网页文字、读数、零件说明里写的摆角和行程，和算出来的对不对得上。
+
+它同时返回「运动范围」：摇杆的摆角、滑块的行程、每个运动零件扫过的范围。文字里的数字用这里的数；
+要给运动的零件配一块玻璃、一条导轨、一个罩子，大小和位置按扫过的范围定。
 
 ## 写法建议
 

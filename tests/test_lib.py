@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """零件库测试：python tests/test_lib.py（需要能找到 Blender，或者当前 Python 装了 bpy）。"""
 import json
+import math
 import os
 import shutil
 import sys
@@ -147,7 +148,7 @@ def main():
     assert not motion(gears, spin(-40), "mo_ratio")["ok"]
     wsrc = ("from qblib import *\nw = part(worm(2, 60), 'W'); rot(w, 0, 90, 0); at(w, -30, 0, 40)\n"
             "g = part(worm_wheel(2, 30, 14, bore=8), 'G'); mesh_worm(g, w)\n")
-    wspin = lambda sg: [{"part": "W", "type": "spin", "axis": "x", "speed": 360}, {"part": "G", "type": "spin", "axis": "z", "speed": sg}]
+    wspin = lambda sg: [{"part": "W", "type": "spin", "axis": "x", "speed": 360}, {"part": "G", "type": "spin", "axis": "z", "speed": sg, "hollow": True}]
     rr = [motion(wsrc, wspin(sg), "mo_worm%d" % i)["ok"] for i, sg in enumerate((12, -12))]
     assert sorted(rr) == [False, True], rr                                                # 蜗轮只有一个转向是对的
     fsrc = ("from qblib import *\n"
@@ -158,7 +159,7 @@ def main():
             "    p = part(cylinder(5, 8), 'Pin%d' % i); rot(p, 90, 0, 0); at(p, x, 6, z)\n"
             "")
     four = {"type": "four_bar", "crank": ["Crank", "Pin0"], "coupler": "Coupler", "rocker": ["Rocker", "Pin1"],
-            "a": [0, 0, 0], "b": [0, 0, 20], "c": [60, 0, 45], "d": [70, 0, 0], "axis": "y"}
+            "a": [0, 0, 0], "b": [0, 0, 20], "c": [60, 0, 45], "d": [70, 0, 0], "axis": "y", "hollow": True}
     r = motion(fsrc, [dict(four, speed=90)], "mo_four")
     assert r["ok"], r                                                                     # 销子一直在孔里，杆子互相不撞
     r = motion(fsrc + "blk = part(box(10, 4, 10), 'Block'); at(blk, 25, 0, -5)\nallow_float(blk)\n", [dict(four, speed=90)], "mo_hit")
@@ -168,7 +169,87 @@ def main():
     r = motion(fsrc + "blk = part(box(10, 4, 10), 'Block'); at(blk, 25, 0, -5)\nallow_float(blk)\n", [dict(four, angle="ang")], "mo_sweep",
                params=[{"id": "ang", "min": 0, "max": 360, "value": 0}])
     assert not r["ok"] and "ang=" in r["problems"][0], r                                  # 角度由滑条给时，把滑条扫一遍
-    print("运动检查：转向、速比、连杆铰点、挡路的零件都能查出来")
+    # 运动范围、缺销子、缺轴、贴着的零件离开
+    jsrc = ("from qblib import *\n"
+            "base = part(at(box(100, 6, 14), 35, -6, -7), 'Base')\n"
+            "cr = part(link_bar((0, 0, 0), (0, 0, 20), 10, 4), 'Crank')\n"
+            "ro = part(link_bar((70, 0, 0), (60, 0, 45), 10, 4), 'Rocker')\n"
+            "co = part(move(link_bar((0, 0, 20), (60, 0, 45), 10, 4), 0, 4, 0), 'Coupler')\n"
+            "pb = part(pin_joint(cr, co, (0, 0, 20), 4), 'PinB')\n%s"
+            "sa = part(shaft_through([base, cr], (0, -9, 0), (0, 2, 0), 5), 'ShaftA')\n%s")
+    pin_c = "pc = part(pin_joint(co, ro, (60, 0, 45), 4), 'PinC')\n"
+    shaft_d = "sd = part(shaft_through([base, ro], (70, -9, 0), (70, 2, 0), 5), 'ShaftD')\n"
+    jb = {"type": "four_bar", "crank": ["Crank", "PinB"], "coupler": "Coupler", "rocker": ["Rocker", "PinC"],
+          "a": "ShaftA", "b": "PinB", "c": "PinC", "d": "ShaftD", "axis": "y", "speed": 90}
+    r = motion(jsrc % (pin_c, shaft_d), [jb], "mo_j_ok")
+    assert r["ok"] and not r["warnings"], r
+    sw = r["ranges"][0]["swing"][0]
+    A_, D_ = 20.0, 70.0
+    ref = lambda ac: math.degrees(math.acos((D_ * D_ + (10 ** 2 + 45 ** 2) - ac * ac) / (2 * D_ * math.hypot(10, 45))))
+    L_ = math.hypot(60, 25)
+    assert abs(sw - (ref(L_ + A_) - ref(L_ - A_))) < 0.3, (sw, ref(L_ + A_) - ref(L_ - A_))          # 摆角和手算的一致
+    assert any("Rocker" in ln and "扫过" in ln for ln in r["ranges"][0]["lines"]), r["ranges"]
+    r = motion(jsrc % ("", shaft_d), [dict(jb, rocker="Rocker", c=[60, 0, 45])], "mo_j_nopin")
+    assert not r["ok"] and any("没有销子" in x and "铰点 c" in x for x in r["problems"]), r
+    r = motion(jsrc % (pin_c, "hole(ro, 5.2, (70, -2, 0), axis='y')\nallow_float(base)\n"), [dict(jb, d=[70, 0, 0])], "mo_j_noshaft")
+    assert not r["ok"] and any("转轴那里是空的" in x and "Rocker" in x for x in r["problems"]), r
+    r = motion(jsrc % (pin_c, "hole(ro, 5.2, (70, -2, 0), axis='y')\nallow_float(base)\n"), [dict(jb, d=[70, 0, 0], hollow=True)], "mo_j_hollow")
+    assert r["ok"], r
+    r = motion(jsrc % (pin_c, shaft_d), [dict(jb, b=[30, 0, 60])], "mo_j_offpt")
+    assert not r["ok"] and any("不在" in x and "铰点 b" in x for x in r["problems"]), r
+    gsrc = "from qblib import *\ng = part(spur_gear(2, 20, 8, bore=8), 'G')\nbase = part(at(box(60, 60, 4), 0, 0, -4), 'Base')\n%s"
+    gs = [{"part": "G", "type": "spin", "axis": "z", "speed": 60}]
+    r = motion(gsrc % "", gs, "mo_g_empty")
+    assert not r["ok"] and any("轴线上是空的" in x for x in r["problems"]), r
+    assert motion(gsrc % "", [dict(gs[0], hollow=True)], "mo_g_hollow")["ok"]
+    assert motion(gsrc % "s = part(at(cylinder(8, 20), 0, 0, 0), 'S')\n", gs, "mo_g_shaft")["ok"]
+    ssrc = ("from qblib import *\nrail = part(box(%d, 10, 4), 'Rail')\nsl = part(at(box(20, 10, 6), 0, 0, 4), 'Slider')\n"
+            "cr = part(at(rot(cylinder(30, 4), 90, 0, 0), -60, -5, 30), 'Disc')\nrod = part(link_bar((-50, -11, 30), (0, -11, 7), 6, 4), 'Rod')\n"
+            "p1 = part(pin_joint(cr, rod, (-50, 0, 30), 3), 'P1')\np2 = part(pin_joint(rod, sl, (0, 0, 7), 3), 'P2')\n"
+            "ax = part(shaft_through(cr, (-60, -9, 30), (-60, 6, 30), 6), 'Axle')\nallow_float(rail)\n")
+    sa = [{"type": "crank_slider", "crank": ["Disc", "P1", "Axle"], "rod": "Rod", "slider": ["Slider", "P2"], "center": "Axle",
+           "crank_pin": "P1", "slider_pin": "P2", "axis": "y", "slide": "x", "speed": 90}]
+    r = motion(ssrc % 200, sa, "mo_s_ok")
+    rl, e_ = math.hypot(50, 23), 23.0
+    want = math.sqrt((rl + 10) ** 2 - e_ * e_) - math.sqrt((rl - 10) ** 2 - e_ * e_)           # 偏置曲柄滑块的行程
+    assert r["ok"] and abs(r["ranges"][0]["stroke"][0] - want) < 0.3, (r, want)
+    r = motion(ssrc % 24, sa, "mo_s_short")
+    assert any("探到外面" in x and "Slider" in x for x in r["warnings"]) or any("离开" in x for x in r["problems"]), r
+    print("运动检查：转向、速比、连杆铰点、挡路的零件、缺销子、缺轴、滑出导轨都能查出来，摆角和行程算得对")
+
+    # 对轴摆放、铰接：位置算对，孔打好，报错说清楚
+    near = lambda a, b, tol=0.05: all(abs(x - y) <= tol for x, y in zip(a, b))
+    r = build(cfg, "from qblib import *\n"
+                   "s = part(shaft_through(part(box(30, 10, 30), 'Block'), (0, -20, 15), (0, 20, 15), 8), 'Shaft')\n"
+                   "b = part(on_axis(bearing(8, 22, 7), s, pos=32), 'Brg')\n"
+                   "g = part(on_axis(spur_gear(2, 20, 6, bore=8), s), 'Gear')\n"
+                   "move(g, 0, -14, 0)\n"
+                   "r1 = part(aim(cylinder(6, 50), (40, 0, 0), (40, 30, 40)), 'Rod')\nallow_float(r1)\n", "axis")
+    p = {x["name"]: x for x in r["parts"]}
+    assert r.get("ok") and not r["issues"], r["issues"]
+    assert near(p["Shaft"]["size"], [8, 40, 8]) and near(p["Brg"]["center"], [0, 12, 15]) and near(p["Brg"]["size"], [22, 7, 22]), (p["Shaft"], p["Brg"])
+    assert near(p["Gear"]["center"], [0, -14, 15], 0.01) and "Shaft" in p["Block"]["touches"] and "Shaft" in p["Brg"]["touches"], p
+    assert near(p["Rod"]["min"], [37, -2.4, -1.8], 0.1) and near(p["Rod"]["max"], [43, 32.4, 41.8], 0.1), p["Rod"]
+    assert [j["name"] for j in r["joints"]] == ["Shaft"] and r["joints"][0]["parts"] == ["Block"], r["joints"]
+    r = build(cfg, "from qblib import *\n"
+                   "a = part(link_bar((0, 0, 0), (40, 0, 0), 12, 4), 'A')\n"
+                   "b = part(move(link_bar((40, 0, 0), (60, 0, 30), 12, 4), 0, 4, 0), 'B')\n"
+                   "pin = part(pin_joint(a, b, (40, 0, 0), 5), 'Pin')\n", "pinj")
+    p = {x["name"]: x for x in r["parts"]}
+    assert r.get("ok") and not r["issues"], r["issues"]
+    assert near(p["Pin"]["size"], [5, 8, 5]) and near(p["Pin"]["center"], [40, 2, 0]) and set(p["Pin"]["touches"]) == {"A", "B"}, p["Pin"]
+    assert r["joints"][0]["kind"] == "pin" and r["joints"][0]["parts"] == ["A", "B"] and near(r["joints"][0]["point"], [40, 2, 0])
+    for src, word in (("pin_joint(box(10, 10, 10), at(box(10, 10, 10), 50, 0, 0), (0, 0, 5), 4)", "周围没有材料"),
+                      ("shaft_through(box(10, 10, 10), (30, -20, 5), (30, 20, 5), 4)", "没有穿过"),
+                      ("shaft_through(box(10, 10, 10), (0, 0, 5), (0, 0, 5), 4)", "p1 和 p2 重合"),
+                      ("pin_joint(box(10, 10, 10), box(9, 9, 9), (0, 0, 5), 4, clearance=-1)", "clearance"),
+                      ("aim(box(10, 10, 10), (1, 2, 3), (1, 2, 3))", "p_from 和 p_to 重合"),
+                      ("on_axis(box(10, 10, 10), cylinder(8, 40), pos=60)", "0 ~ 40"),
+                      ("on_axis(box(10, 10, 10), ((0, 0, 0), 'x'))", "必须写 pos"),
+                      ("on_axis(box(10, 10, 10), link_bar((0, 0, 0), (40, 0, 0), 10, 4))", "不在它的正中间")):
+        r = build(cfg, "from qblib import *\n" + src + "\n", "axerr")
+        assert not r.get("ok") and word in r["error"]["msg"], (src, r.get("error"))
+    print("对轴摆放和铰接：aim / on_axis / pin_joint / shaft_through 位置、打孔、报错都对")
 
     # 不用 qblib、直接写 bpy 的脚本：改 location / rotation_euler、设了父子关系的，位置都要算对
     r = build(cfg, "import bpy, bmesh\n"

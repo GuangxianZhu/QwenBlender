@@ -55,6 +55,7 @@ def run_model(path):
     """执行 model.py。返回 (错误信息或 None, 打印输出)。"""
     import qblib
     qblib._counter.clear()
+    del qblib._JOINTS[:]
     src = open(path, encoding="utf-8").read()
     buf = io.StringIO()
     old = sys.stdout
@@ -806,6 +807,7 @@ def mode_build(job, a):
     rep["stage"] = "measure"
     m, _ = measure_all(objs, plan)
     rep.update(m)
+    rep["joints"] = joint_list()
     json.dump(m["parts"], open(os.path.join(out, "parts.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out, "model.blend"), check_existing=False)
     rep["stage"] = "export"
@@ -818,6 +820,20 @@ def mode_build(job, a):
     rep["stage"] = "done"
     rep["seconds"] = round(time.time() - t0, 1)
     return rep
+
+
+def joint_list():
+    """model.py 里用 pin_joint / shaft_through 做出来的销子和轴。"""
+    import qblib
+    out = []
+    for j in qblib._JOINTS:
+        try:
+            names = [o.name for o in j["parts"]]
+            out.append({"kind": j["kind"], "name": j["obj"].name, "parts": names,
+                        "point": [round(c, 3) for c in j["point"]], "axis": [round(c, 4) for c in j["axis"]]})
+        except ReferenceError:          # 之后被删掉或者并进别的零件了
+            continue
+    return out
 
 
 def _total(objs):
@@ -959,8 +975,27 @@ def _sangle(u, v, n):
     return math.atan2(n.dot(u.cross(v)), u.dot(v))
 
 
-def pose_at(anims, t, base, params):
-    """按 demo.json 的动画算出时刻 t 每个零件的位置。和 web/viewer.js 的算法一致。返回 {零件名: 4x4 矩阵}，只含动了的零件。"""
+POINT_KEYS = ("pivot", "center", "crank_pin", "slider_pin", "a", "b", "c", "d")
+
+
+def resolve_points(anims, centers):
+    """动画里写成零件名的点，换成那个零件的中心坐标。"""
+    out = []
+    for a in anims:
+        a = dict(a)
+        for k in POINT_KEYS:
+            v = a.get(k)
+            if isinstance(v, str):
+                if v not in centers:
+                    raise _Skip("%s 写的是零件名 %r，但模型里没有这个零件" % (k, v))
+                a[k] = [float(c) for c in centers[v]]
+        out.append(a)
+    return out
+
+
+def pose_at(anims, t, base, params, info=None):
+    """按 demo.json 的动画算出时刻 t 每个零件的位置。和 web/viewer.js 的算法一致。返回 {零件名: 4x4 矩阵}，只含动了的零件。
+    info 给了的话，往里记每个连杆动画的状态：{动画序号: 摇杆转角（度）或滑块位移（mm）}。"""
     st = {}
 
     def get(nm):
@@ -985,7 +1020,7 @@ def pose_at(anims, t, base, params):
             s_[0] = to + q @ (s_[0] - frm)
             s_[1] = q @ s_[1]
 
-    for a in anims:
+    for ai, a in enumerate(anims):
         ty = a.get("type")
         piv = Vector(a["pivot"]) if a.get("pivot") else None
         tl = max(0.0, t - float(a.get("delay") or 0))
@@ -1027,6 +1062,8 @@ def pose_at(anims, t, base, params):
                     s_ = get(nm)
                     if s_ is not None:
                         s_[0] = s_[0] + d * sl
+                if info is not None:
+                    info[ai] = sl
             else:
                 A, B0, C0, D = (Vector(a[k]) for k in "abcd")
                 B = A + qc @ (B0 - A)
@@ -1043,13 +1080,131 @@ def pose_at(anims, t, base, params):
                 rigid(_names(a.get("crank")), A, A, qc)
                 rigid(_names(a.get("coupler")), B0, B,
                       Matrix.Rotation(_sangle(_plane(C0 - B0, n), _plane(C - B, n), n), 4, n).to_quaternion())
-                rigid(_names(a.get("rocker")), D, D,
-                      Matrix.Rotation(_sangle(_plane(C0 - D, n), _plane(C - D, n), n), 4, n).to_quaternion())
+                rk = _sangle(_plane(C0 - D, n), _plane(C - D, n), n)
+                rigid(_names(a.get("rocker")), D, D, Matrix.Rotation(rk, 4, n).to_quaternion())
+                if info is not None:
+                    info[ai] = math.degrees(rk)
     return {nm: Matrix.Translation(v[0]) @ v[1].to_matrix().to_4x4() for nm, v in st.items()}
 
 
+def _proj_range(geo, n):
+    """零件包围盒在方向 n 上的范围。"""
+    ts = [Vector((x, y, z)).dot(n) for x in (geo.lo[0], geo.hi[0]) for y in (geo.lo[1], geo.hi[1]) for z in (geo.lo[2], geo.hi[2])]
+    return min(ts), max(ts)
+
+
+def _line_in_bbox(geo, P, n, margin=1.0):
+    """过 P、方向 n 的直线有没有穿过零件的包围盒。"""
+    tmin, tmax = -1e18, 1e18
+    for k in range(3):
+        lo, hi = geo.lo[k] - margin, geo.hi[k] + margin
+        if abs(n[k]) < 1e-9:
+            if P[k] < lo or P[k] > hi:
+                return False
+        else:
+            t1, t2 = (lo - P[k]) / n[k], (hi - P[k]) / n[k]
+            tmin, tmax = max(tmin, min(t1, t2)), min(tmax, max(t1, t2))
+    return tmin <= tmax
+
+
+def _inside_len(geo, P, n, t0, t1):
+    """过 P、方向 n 的直线上，n 方向坐标 t0~t1 这一段里有多长在零件实体内部。"""
+    if t1 - t0 < 1e-6:
+        return 0.0
+    k = int(min(40, max(4, math.ceil((t1 - t0) / 0.5))))
+    step = (t1 - t0) / k
+    o = P - n * P.dot(n)
+    return step * sum(1 for i in range(k) if geo.inside(o + n * (t0 + (i + 0.5) * step)))
+
+
+def _near_count(src, dst):
+    """src 的采样点里，有多少个贴着 dst 的表面。"""
+    return sum(1 for p in src.pts if dst.bvh.find_nearest(p, FIT)[0] is not None)
+
+
+def _p3(v):
+    return "(%s)" % ", ".join("%g" % round(c, 1) for c in v)
+
+
+def joint_problems(anims, geos, base, where):
+    """连杆的铰点上有没有销子、转动零件的转轴上有没有轴。只看静止时的模型。"""
+    out = []
+
+    def cands(group, P, n):
+        return [g for g in group if g in geos and _line_in_bbox(geos[g], P, n)]
+
+    def thr(c, n):
+        r0, r1 = _proj_range(geos[c], n)
+        return min(0.5, 0.3 * (r1 - r0))
+
+    def through(X, c, P, n):
+        return _inside_len(geos[X], P, n, *_proj_range(geos[c], n)) >= thr(c, n)
+
+    def pinned(P, n, g1, g2):
+        c1, c2 = cands(g1, P, n), cands(g2, P, n)
+        if not c1 or not c2:
+            return None
+        for X in geos:
+            if not _line_in_bbox(geos[X], P, n, 0.0):
+                continue
+            if all(X in grp or any(c != X and through(X, c, P, n) for c in cs) for grp, cs in ((g1, c1), (g2, c2))):
+                return True
+        return False
+
+    def held(P, n, group):
+        cs = cands(group, P, n)
+        if not cs:
+            return None
+        return any(through(X, c, P, n) for X in geos if _line_in_bbox(geos[X], P, n, 0.0) for c in cs)
+
+    for a in anims:
+        ty = a.get("type")
+        if ty == "spin":
+            nm = a.get("part")
+            if a.get("hollow") or nm not in geos:
+                continue
+            n = _axis_v(a.get("axis"))
+            P = Vector(a["pivot"]) if a.get("pivot") else base[nm].translation.copy()
+            if held(P, n, [nm]) is False:
+                out.append("%s：%s 绕过 %s 的轴线转，但轴线上是空的（孔里没有轴）。用 shaft_through 配一根轴，或者让轴穿过它；"
+                           "它本来就是空心的、不需要轴，就在这个动画里加 \"hollow\": true" % (where, nm, _p3(P)))
+        elif ty in ("crank_slider", "four_bar"):
+            n = _axis_v(a.get("axis"), "y")
+            if ty == "four_bar":
+                grp = {k: _names(a.get(k)) for k in ("crank", "coupler", "rocker")}
+                moving = (("b", "crank", "coupler"), ("c", "coupler", "rocker"))
+                ground = (("a", "crank"), ("d", "rocker"))
+                cn = {"crank": "曲柄", "coupler": "连杆", "rocker": "摇杆"}
+            else:
+                grp = {k: _names(a.get(k)) for k in ("crank", "rod", "slider")}
+                moving = (("crank_pin", "crank", "rod"), ("slider_pin", "rod", "slider"))
+                ground = (("center", "crank"),)
+                cn = {"crank": "曲柄", "rod": "连杆", "slider": "滑块"}
+            for key, g1, g2 in moving:
+                P = Vector(a[key])
+                r = pinned(P, n, grp[g1], grp[g2])
+                if r is None:
+                    miss = [g for g in (g1, g2) if not cands(grp[g], P, n)]
+                    out.append("%s：铰点 %s %s 不在%s这一组零件（%s）上。检查这个点的坐标，或者直接写销子的零件名" % (
+                        where, key, _p3(P), "、".join(cn[g] for g in miss), "、".join(x for g in miss for x in grp[g])))
+                elif r is False:
+                    out.append("%s：%s和%s在铰点 %s %s 没有销子连着（那里是空的，或者只是面贴面）。"
+                               "在 model.py 里用 pin_joint(%s, %s, %s, 直径) 补一根销子，再把销子的名字写进其中一组" % (
+                                   where, cn[g1], cn[g2], key, _p3(P), grp[g1][0] if grp[g1] else "a", grp[g2][0] if grp[g2] else "b", _p3(P)))
+            if a.get("hollow"):
+                continue
+            for key, g in ground:
+                P = Vector(a[key])
+                if held(P, n, grp[g]) is False:
+                    names = cands(grp[g], P, n)
+                    out.append("%s：%s 绕 %s %s 转，但转轴那里是空的，没有轴穿过。在 model.py 里用 shaft_through([%s], 起点, 终点, 直径) "
+                               "补一根轴（一头落在支座或电机上）" % (where, "、".join(names), key, _p3(P), ", ".join(names)))
+    return out
+
+
 def mode_motion(job, a):
-    """把 demo.json 里每一步的动画摆到几个时刻，看动起来以后零件会不会互相穿模。"""
+    """把 demo.json 里每一步的动画摆到几个时刻：动起来以后会不会穿模、贴着的零件会不会离开、铰点和转轴上有没有东西；
+    并算出运动范围（摆角、行程、每个零件扫过的范围）。"""
     t0 = time.time()
     load_blend(job)
     cfg = json.load(open(os.path.join(job, "demo.json"), encoding="utf-8-sig"))
@@ -1058,23 +1213,39 @@ def mode_motion(job, a):
     params = {p["id"]: float(p.get("value", 0)) for p in cfg.get("params", []) if isinstance(p, dict) and "id" in p}
     allow = set(bpy.context.scene.get("qb_allow_overlap", []))
     static = {n: Geo(o) for n, o in objs.items()}
+    centers = {n: (g.lo + g.hi) / 2 for n, g in static.items()}
+    local = {}
+    for n, g in static.items():                         # 每个零件留一些采样点，用来算扫过的范围
+        pts = g.pts if len(g.pts) <= 400 else g.pts[::max(1, len(g.pts) // 400)]
+        inv = np.array(base[n].inverted())
+        w = np.array([p[:] for p in pts], dtype=np.float64)
+        local[n] = w @ inv[:3, :3].T + inv[:3, 3]
     names = sorted(objs)
-    rest = {}                                           # 静止时就穿模的那些对，前面已经报过了，这里不重复
+    rest_pen, rest_gap = {}, {}                         # 静止时就穿模的那些对前面已经报过了，这里不重复
     for i, x in enumerate(names):
         for y in names[i + 1:]:
-            if bbox_gap(static[x], static[y]) <= FIT and not threaded_fit(static[x], static[y]):
-                if pair_relation(static[x], static[y])[1] > TOL:
-                    rest["%s|%s" % (x, y)] = True
-    problems, notes, seen, checked = [], [], set(), 0
+            if bbox_gap(static[x], static[y]) <= FIT:
+                k = "%s|%s" % (x, y)
+                gap, pen = pair_relation(static[x], static[y])
+                rest_gap[k] = gap
+                if pen > TOL and not threaded_fit(static[x], static[y]):
+                    rest_pen[k] = True
+    problems, warnings, notes, ranges, seen, seen_joint, checked = [], [], [], [], set(), set(), 0
     for si, step in enumerate(cfg.get("steps", [])):
         anims = [x for x in step.get("anim", []) if isinstance(x, dict) and x.get("type") != "blink"]
         key = json.dumps(anims, sort_keys=True, ensure_ascii=False)
         if not anims or key in seen:
             continue
         seen.add(key)
+        where = "第 %d 步「%s」" % (si + 1, step.get("title", ""))
         try:
-            speeds = [abs(_num(x.get("speed", 0), params, 0.0)) for x in anims if x.get("type") in ("spin", "crank_slider", "four_bar") and x.get("angle") is None]
-            if any(v > 1e-9 for v in speeds):
+            anims = resolve_points(anims, centers)
+            links = [i for i, x in enumerate(anims) if x.get("type") in ("crank_slider", "four_bar")]
+            cyc = [x for x in anims if x.get("type") in ("spin", "crank_slider", "four_bar")]
+            cyc_parts = {nm for x in cyc for k in ("part", "crank", "rod", "slider", "coupler", "rocker") for nm in _names(x.get(k))}
+            speeds = [abs(_num(x.get("speed", 0), params, 0.0)) for x in cyc if x.get("angle") is None]
+            speeds = [v for v in speeds if v > 1e-9]
+            if speeds:
                 times = [ang / max(speeds) for ang in (41, 97, 163, 229, 301, 347)]
             else:
                 tm = max([float(x.get("time") or 2) + float(x.get("delay") or 0) for x in anims] + [0.5])
@@ -1082,14 +1253,79 @@ def mode_motion(job, a):
             # 角度由滑条给的连杆：把那个滑条从最小扫到最大
             swept = [p for p in cfg.get("params", []) if isinstance(p, dict) and "id" in p and any(
                 x.get("angle") is not None and re.search(r"\b%s\b" % re.escape(str(p["id"])), str(x["angle"])) for x in anims)]
-            samples = [(t, params, "%.1f 秒时" % t) for t in times]
-            for f in ((0.0, 0.2, 0.4, 0.6, 0.8, 1.0) if swept else ()):
+
+            def with_param(f):
                 pp = dict(params)
                 for p in swept:
                     lo, hi = float(p.get("min", 0)), float(p.get("max", 1))
                     pp[p["id"]] = lo + (hi - lo) * f
-                samples.append((times[-1], pp, "滑条 %s 时" % "、".join("%s=%g" % (p["id"], pp[p["id"]]) for p in swept)))
-            worst = {}
+                return pp, "滑条 %s 时" % "、".join("%s=%g" % (p["id"], pp[p["id"]]) for p in swept)
+
+            samples = [(t, params, "%.1f 秒时" % t) for t in times]
+            for f in ((0.0, 0.2, 0.4, 0.6, 0.8, 1.0) if swept else ()):
+                samples.append((times[-1],) + with_param(f))
+            # ---- 运动范围：细分很多个时刻，只算位置，不做碰撞
+            dense = []
+            if speeds:
+                lk = [abs(_num(anims[i].get("speed", 0), params, 0.0)) for i in links if anims[i].get("angle") is None]
+                lk = [v for v in lk if v > 1e-9]
+                period = 360.0 / (min(lk) if lk else min(speeds))
+                dense += [(period * i / 180, params, "%.1f 秒时" % (period * i / 180)) for i in range(180)]
+            else:
+                dense += [(times[-1] * i / 24, params, "%.1f 秒时" % (times[-1] * i / 24)) for i in range(25)]
+            if swept:
+                dense += [(times[-1],) + with_param(i / 60) for i in range(61)]
+            sweep_lo, sweep_hi, ext = {}, {}, {}
+            for t, par, label in dense:
+                info = {}
+                pose = pose_at(anims, t, base, par, info)
+                for n, m in pose.items():
+                    mm = np.array(m)
+                    w = local[n] @ mm[:3, :3].T + mm[:3, 3]
+                    lo, hi = w.min(axis=0), w.max(axis=0)
+                    sweep_lo[n] = lo if n not in sweep_lo else np.minimum(sweep_lo[n], lo)
+                    sweep_hi[n] = hi if n not in sweep_hi else np.maximum(sweep_hi[n], hi)
+                for i, v in info.items():
+                    e = ext.setdefault(i, [v, v, None, None])
+                    if v <= e[0]:
+                        e[0], e[2] = v, (t, par, label)
+                    if v >= e[1]:
+                        e[1], e[3] = v, (t, par, label)
+            lines, swing, stroke = [], [], []
+            for i in links:
+                if i not in ext:
+                    continue
+                lo, hi, s_lo, s_hi = ext[i]
+                x = anims[i]
+                if x["type"] == "four_bar":
+                    swing.append(round(hi - lo, 1))
+                    lines.append("摇杆（%s）摆角 %.1f°：相对初始位置 %+.1f° ~ %+.1f°" % ("、".join(_names(x.get("rocker"))), hi - lo, lo, hi))
+                else:
+                    stroke.append(round(hi - lo, 1))
+                    lines.append("滑块（%s）行程 %.1f mm：相对初始位置 %+.1f ~ %+.1f mm" % ("、".join(_names(x.get("slider"))), hi - lo, lo, hi))
+                for smp in (s_lo, s_hi):                 # 摆到两头、走到两头的时刻也要查碰撞
+                    if smp is not None:
+                        samples.append((smp[0], smp[1], "%s（%s到头）" % (smp[2], "摇杆摆" if x["type"] == "four_bar" else "滑块走")))
+            grown = []
+            for n in sweep_lo:
+                g = static[n]
+                grow = max(float(np.max(g.lo - sweep_lo[n])), float(np.max(sweep_hi[n] - g.hi)))
+                if grow > 1.0:
+                    grown.append((grow, n))
+            for grow, n in sorted(grown, reverse=True)[:8]:
+                lines.append("%s 扫过的范围 x %g~%g  y %g~%g  z %g~%g" % (
+                    n, round(sweep_lo[n][0], 1), round(sweep_hi[n][0], 1), round(sweep_lo[n][1], 1), round(sweep_hi[n][1], 1),
+                    round(sweep_lo[n][2], 1), round(sweep_hi[n][2], 1)))
+            if lines:
+                ranges.append({"step": si + 1, "title": step.get("title", ""), "lines": lines, "swing": swing, "stroke": stroke})
+            ever = set(sweep_lo)
+            # ---- 铰点和转轴
+            jk = json.dumps([{k: v for k, v in x.items() if k not in ("speed", "angle", "delay")} for x in cyc], sort_keys=True, ensure_ascii=False)
+            if cyc and jk not in seen_joint:
+                seen_joint.add(jk)
+                problems += joint_problems(cyc, static, base, where)
+            # ---- 碰撞、贴合
+            worst, cover, n0 = {}, {}, {}
             for t, par, label in samples:
                 pose = pose_at(anims, t, base, par)
                 moved = [n for n, m in pose.items() if any(abs(m[r][c] - base[n][r][c]) > 1e-7 for r in range(3) for c in range(4))]
@@ -1105,7 +1341,14 @@ def mode_motion(job, a):
                         if other == n or (other in moved and other < n):
                             continue
                         k = "%s|%s" % tuple(sorted((n, other)))
-                        if k in rest or k in allow or bbox_gap(geo[n], geo[other]) > 0 or threaded_fit(geo[n], geo[other]):
+                        if n in cyc_parts and other not in ever and k not in allow and rest_gap.get(k, 9e9) <= FIT:
+                            if k not in n0:
+                                n0[k] = _near_count(static[n], static[other])
+                            if n0[k] >= 12:
+                                ratio = _near_count(geo[n], geo[other]) / n0[k]
+                                if ratio < cover.get(k, (9, ""))[0]:
+                                    cover[k] = (ratio, label, n, other)
+                        if k in rest_pen or k in allow or bbox_gap(geo[n], geo[other]) > 0 or threaded_fit(geo[n], geo[other]):
                             continue
                         pen = pair_relation(geo[n], geo[other])[1]
                         if pen > max(TOL, 0.15) and pen > worst.get(k, (0, 0))[0]:
@@ -1116,12 +1359,21 @@ def mode_motion(job, a):
             checked += 1
             for k, (pen, label) in sorted(worst.items(), key=lambda kv: -kv[1][0])[:6]:
                 x, y = k.split("|")
-                problems.append("第 %d 步「%s」动起来以后穿模：%s %s 和 %s 互相扎进去约 %.1f mm（静止时不穿）" % (
-                    si + 1, step.get("title", ""), label, x, y, pen))
+                problems.append("%s动起来以后穿模：%s %s 和 %s 互相扎进去约 %.1f mm（静止时不穿）" % (where, label, x, y, pen))
+            for k, (ratio, label, n, other) in sorted(cover.items(), key=lambda kv: kv[1][0])[:6]:
+                g = static[other]
+                rng = "%s 的范围是 x %g~%g  y %g~%g  z %g~%g" % (other, round(g.lo[0], 1), round(g.hi[0], 1), round(g.lo[1], 1),
+                                                             round(g.hi[1], 1), round(g.lo[2], 1), round(g.hi[2], 1))
+                if ratio <= 0:
+                    problems.append("%s：%s 静止时贴着 %s，动起来以后 %s完全离开了它。%s；%s 扫过的范围见下面的运动范围。把 %s 做大或挪到位" % (
+                        where, n, other, label, rng, n, other))
+                elif ratio < 0.7:
+                    warnings.append("%s：%s 贴着 %s 的部分最少时只剩 %d%%（%s），有一部分探到外面去了。%s" % (
+                        where, n, other, round(100 * ratio), label, rng))
         except _Skip as e:
             notes.append("第 %d 步没有做运动检查：%s" % (si + 1, e))
-    return {"ok": not problems, "problems": problems, "notes": notes, "checked_steps": checked,
-            "seconds": round(time.time() - t0, 1)}
+    return {"ok": not problems, "problems": problems, "warnings": warnings, "notes": notes, "ranges": ranges,
+            "checked_steps": checked, "seconds": round(time.time() - t0, 1)}
 
 
 def mode_index(path):

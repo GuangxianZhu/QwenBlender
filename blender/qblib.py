@@ -27,8 +27,10 @@ __all__ = [
     "bearing", "flange", "l_bracket",
     # 加工
     "union", "cut", "intersect", "hole", "holes_circle", "bevel", "chamfer",
+    # 铰接
+    "pin_joint", "shaft_through",
     # 摆放
-    "at", "move", "rot", "rot_about", "stack", "beside", "center_on",
+    "at", "move", "rot", "rot_about", "aim", "on_axis", "stack", "beside", "center_on",
     "copy", "mirror_copy", "array_circular", "array_linear", "join", "delete",
     # 信息
     "bbox", "part", "mat", "color", "allow_overlap", "allow_float",
@@ -1339,6 +1341,158 @@ def holes_circle(obj, d, circle_d, n, center=(0, 0), axis="z", start_angle=0, de
     return obj
 
 
+# ---------------------------------------------------------------- 铰接
+
+_JOINTS = []      # pin_joint / shaft_through 登记的销子和轴，构建报告里会列出来
+
+
+def _obj_list(v, what):
+    objs = list(v) if isinstance(v, (list, tuple)) else [v]
+    if not objs:
+        raise ValueError("%s 不能是空的" % what)
+    for o in objs:
+        if o is None or getattr(o, "type", "") != "MESH":
+            raise ValueError("%s 要是零件（qblib 函数返回的物体）或零件的列表，现在里面有 %r" % (what, o))
+    return objs
+
+
+def _world_bvh(obj):
+    from mathutils.bvhtree import BVHTree
+    _update()
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.transform(obj.matrix_world)
+    bm.normal_update()
+    bmesh.ops.triangulate(bm, faces=bm.faces)
+    tree = BVHTree.FromBMesh(bm)
+    bm.free()
+    return tree
+
+
+def _ray_spans(tree, origin, d, far):
+    """过 origin、方向 d 的直线穿过实体的区间 [(t0, t1), …]，t 是沿 d 离 origin 的距离。"""
+    start = origin - d * far
+    ts = []
+    cur = start
+    for _ in range(96):
+        hit = tree.ray_cast(cur, d)
+        if hit[0] is None:
+            break
+        ts.append((hit[0] - origin).dot(d))
+        cur = hit[0] + d * 1e-4
+    return [(ts[i], ts[i + 1]) for i in range(0, len(ts) - 1, 2) if ts[i + 1] - ts[i] > 1e-5]
+
+
+def _axial_extent(obj, point, d, r):
+    """obj 在「过 point、方向 d 的轴线」周围半径 r 的一圈上，沿轴向占了哪一段。返回 (t0, t1)；一点材料都没有返回 None。"""
+    tree = _world_bvh(obj)
+    bb = bbox(obj)
+    far = Vector(bb["size"]).length + (Vector(bb["center"]) - point).length + 10
+    u = d.orthogonal().normalized()
+    v = d.cross(u)
+    lo = hi = None
+    rays = 12 if r > 1e-6 else 1
+    for k in range(rays):
+        an = 2 * math.pi * k / rays
+        for t0, t1 in _ray_spans(tree, point + (u * math.cos(an) + v * math.sin(an)) * r, d, far):
+            lo = t0 if lo is None else min(lo, t0)
+            hi = t1 if hi is None else max(hi, t1)
+    return None if lo is None else (lo, hi)
+
+
+def _range_text(obj):
+    bb = bbox(obj)
+    return "x %g~%g  y %g~%g  z %g~%g" % (bb["min"][0], bb["max"][0], bb["min"][1], bb["max"][1], bb["min"][2], bb["max"][2])
+
+
+def _drill_axis(obj, dia, p, ax, t0=None, t1=None):
+    """沿「过 p、方向 ax」的轴线给 obj 钻孔：不给 t0、t1 就打通，给了就只钻这一段。返回有没有钻掉材料。"""
+    if t0 is None:
+        bb = bbox(obj)
+        span = Vector(bb["size"]).length + (Vector(bb["center"]) - p).length + 2
+        t0, t1 = -span, span
+    c = cylinder(dia, t1 - t0, name=_auto_name("_drill"))
+    c.matrix_world = Matrix.Translation(p + ax * t0) @ _align_z_to(ax) @ _DRILL_TWIST
+    _update()
+    v0 = _volume(obj)
+    try:
+        _boolean(obj, c, "DIFFERENCE")
+    finally:
+        delete(c)
+    return v0 - _volume(obj) > 1e-6 * max(v0, 1.0)
+
+
+def _check_clearance(fn, clearance):
+    if isinstance(clearance, bool) or not isinstance(clearance, (int, float)) or clearance < 0:
+        raise ValueError("%s 的 clearance（孔比轴大多少）不能是负数，现在是 %r。一般写 0.2" % (fn, clearance))
+
+
+def pin_joint(a, b, point, d, axis="y", clearance=0.2, name=None):
+    """用一根销子把 a 和 b 铰在一起：两个零件上各打一个销孔，再做一根正好穿过它们的销子，返回销子。
+    a、b 可以是一个零件，也可以是零件的列表；point 是铰点的世界坐标 (x, y, z)，选在两个零件叠在一起的地方；
+    d 销子直径；axis 销子的方向，也就是机构转动的轴（机构在 XZ 平面里动就是 'y'）；孔径 = d + clearance。
+    网页的连杆动画里，铰点可以直接写这根销子的零件名。"""
+    _check_pos(d=d)
+    _check_clearance("pin_joint", clearance)
+    p = _as_vec3(point, "point")
+    ax = _axis(axis)
+    ga, gb = _obj_list(a, "pin_joint 的 a"), _obj_list(b, "pin_joint 的 b")
+    for o in ga:
+        if o in gb:
+            raise ValueError("pin_joint 的 a 和 b 里都有 %s，同一个零件不能和自己铰接" % o.name)
+    lo = hi = None
+    for o in ga + gb:
+        ext = None
+        for k in (1.0, 1.6, 2.5):
+            ext = _axial_extent(o, p, ax, (d + clearance) / 2 * k + 0.3)
+            if ext:
+                break
+        if ext is None:
+            raise ValueError("pin_joint：%s 在铰点 (%g, %g, %g) 周围没有材料，销子穿不到它。%s 的范围是 %s。"
+                             "铰点要选在两个零件叠在一起的地方，axis 要是销子的方向" % (o.name, p.x, p.y, p.z, o.name, _range_text(o)))
+        lo = ext[0] if lo is None else min(lo, ext[0])
+        hi = ext[1] if hi is None else max(hi, ext[1])
+    for o in ga + gb:
+        _drill_axis(o, d + clearance, p, ax)
+    pin = cylinder(d, hi - lo, name=name or _auto_name("Pin"))
+    aim(pin, p + ax * lo, p + ax * hi)
+    pin["qb_kind"] = "pin"
+    _JOINTS.append({"kind": "pin", "obj": pin, "parts": ga + gb, "point": p + ax * ((lo + hi) / 2), "axis": ax.copy()})
+    return pin
+
+
+def shaft_through(parts, p1, p2, d, clearance=0.2, name=None):
+    """做一根轴，并在它穿过的零件上打好孔，返回这根轴。parts 是被穿过的零件（一个或列表）；
+    p1、p2 是轴两端中心的世界坐标；d 轴径；孔径 = d + clearance。零件在轴端以外还有材料时打成盲孔，孔底在轴端。
+    轴承、齿轮这些自带孔而且孔径等于轴径的零件不用列进来。轴的原点在 p1，Z 轴指向 p2。"""
+    _check_pos(d=d)
+    _check_clearance("shaft_through", clearance)
+    a, b = _as_vec3(p1, "p1"), _as_vec3(p2, "p2")
+    length = (b - a).length
+    if length < 1e-6:
+        raise ValueError("shaft_through 的 p1 和 p2 重合了，轴的长度是 0：都是 (%g, %g, %g)" % (a.x, a.y, a.z))
+    ax = (b - a) / length
+    objs = _obj_list(parts, "shaft_through 的 parts")
+    for o in objs:
+        ext = None
+        for k in (1.0, 1.6, 2.5):
+            ext = _axial_extent(o, a, ax, (d + clearance) / 2 * k + 0.3)
+            if ext and ext[1] > 1e-3 and ext[0] < length - 1e-3:
+                break
+            ext = None
+        if ext is None:
+            raise ValueError("shaft_through：轴没有穿过 %s。轴从 (%g, %g, %g) 到 (%g, %g, %g)，%s 的范围是 %s。"
+                             "检查 p1、p2，或者把它从 parts 里去掉" % (o.name, a.x, a.y, a.z, b.x, b.y, b.z, o.name, _range_text(o)))
+        t0 = -1.0 if ext[0] > -1e-3 else 0.0                # 零件在轴端外面还有材料：孔底停在轴端
+        t1 = length + 1.0 if ext[1] < length + 1e-3 else length
+        _drill_axis(o, d + clearance, a, ax, t0, t1)
+    shaft = cylinder(d, length, name=name or _auto_name("Shaft"))
+    aim(shaft, a, b)
+    shaft["qb_kind"] = "shaft"
+    _JOINTS.append({"kind": "shaft", "obj": shaft, "parts": objs, "point": (a + b) / 2, "axis": ax.copy()})
+    return shaft
+
+
 def bevel(obj, r, segments=3, angle=30):
     """给所有尖锐的棱倒圆角。r 圆角大小，segments 段数，angle 多少度以上的棱才算尖。"""
     _check_pos(r=r)
@@ -1387,6 +1541,78 @@ def rot_about(obj, axis, angle, pivot=(0, 0, 0)):
     r = Matrix.Rotation(math.radians(angle), 4, _axis(axis))
     _update()
     obj.matrix_world = Matrix.Translation(p) @ r @ Matrix.Translation(-p) @ obj.matrix_world
+    _update()
+    return obj
+
+
+def aim(obj, p_from, p_to, axis="z", roll=0):
+    """把零件的原点放到 p_from，并把它自己的 axis 轴转到指向 p_to（原来的朝向会被覆盖）。
+    axis 默认 'z'：圆柱、轴、螺栓的轴线，长方体的高；长方体想让长边对过去就写 'x'。roll 是再绕这个方向转多少度。
+    例：一根圆柱从 A 点伸向 B 点 —— aim(cylinder(8, 60), A, B)。"""
+    a, b = _as_vec3(p_from, "p_from"), _as_vec3(p_to, "p_to")
+    if (b - a).length < 1e-6:
+        raise ValueError("aim 的 p_from 和 p_to 重合了，没法确定方向：都是 (%g, %g, %g)" % (a.x, a.y, a.z))
+    if isinstance(roll, bool) or not isinstance(roll, (int, float)):
+        raise ValueError("aim 的 roll 要是角度（度），现在是 %r" % (roll,))
+    d = (b - a).normalized()
+    q = _axis(axis).rotation_difference(d)
+    if roll:
+        q = Matrix.Rotation(math.radians(roll), 3, d).to_quaternion() @ q
+    obj.rotation_mode = "XYZ"
+    obj.rotation_euler = q.to_euler("XYZ")
+    obj.location = a
+    _update()
+    return obj
+
+
+def on_axis(obj, shaft, pos=None, center=True, flip=False):
+    """把零件套到一根轴上：零件自己的轴线（它的 Z）和这根轴重合，朝向不用自己算。
+    shaft 可以是一个零件（用它自己的 Z 轴线，圆柱、轴、齿轮都是），也可以写 (点, 方向)，例如 ((0, 0, 40), 'y')。
+    pos 是沿轴线离起点多远：shaft 是零件时起点是轴的一头，不写 pos 就放在轴的正中间；写成 (点, 方向) 时起点就是那个点，pos 必须写。
+    center=True 把零件厚度的中点对到 pos，False 把零件的原点（底面）对到 pos；flip=True 让零件掉个头。"""
+    _update()
+    if isinstance(shaft, (tuple, list)):
+        if len(shaft) != 2:
+            raise ValueError("on_axis 的 shaft 写成 (点, 方向) 时要正好两项，例如 ((0, 0, 40), 'y')，现在是 %r" % (shaft,))
+        o = _as_vec3(shaft[0], "shaft 的点")
+        d = _axis(shaft[1])
+        if pos is None:
+            raise ValueError("on_axis 的 shaft 写成 (点, 方向) 时必须写 pos（沿轴线离那个点多远）")
+        length = None
+    else:
+        _obj_list(shaft, "on_axis 的 shaft")
+        if shaft is obj:
+            raise ValueError("on_axis 的 obj 和 shaft 是同一个零件：%s" % obj.name)
+        d = _z_axis(shaft)
+        o0 = shaft.matrix_world.translation.copy()
+        co = [shaft.matrix_world @ v.co for v in shaft.data.vertices]
+        ts = [(c - o0).dot(d) for c in co]
+        mid = sum(co, Vector()) / len(co)
+        off = (mid - o0) - d * (mid - o0).dot(d)
+        side = max(((c - o0) - d * (c - o0).dot(d)).length for c in co)
+        if off.length > 0.05 * max(side, 1.0):
+            raise ValueError("on_axis：%s 自己的 Z 轴线不在它的正中间（偏了 %.1f mm），不能当轴用。"
+                             "改成 (点, 方向) 的写法，例如 ((x, y, z), 'y')" % (shaft.name, off.length))
+        o = o0 + d * min(ts)
+        length = max(ts) - min(ts)
+        if pos is None:
+            pos = length / 2
+    if isinstance(pos, bool) or not isinstance(pos, (int, float)) or not math.isfinite(pos):
+        raise ValueError("on_axis 的 pos 要是一个数（毫米），现在是 %r" % (pos,))
+    if length is not None and not (-1e-6 <= pos <= length + 1e-6):
+        raise ValueError("on_axis 的 pos=%g 超出了轴 %s 的长度，应该在 0 ~ %g 之间" % (pos, shaft.name, length))
+    if flip:
+        d = -d
+    q = _z_axis(obj).rotation_difference(d) @ obj.matrix_world.to_quaternion()
+    obj.rotation_mode = "XYZ"
+    obj.rotation_euler = q.to_euler("XYZ")
+    _update()
+    target = o + (-d if flip else d) * pos
+    if center:
+        o1 = obj.matrix_world.translation.copy()
+        ts = [((obj.matrix_world @ v.co) - o1).dot(d) for v in obj.data.vertices]
+        target = target - d * ((min(ts) + max(ts)) / 2)
+    obj.location = target
     _update()
     return obj
 

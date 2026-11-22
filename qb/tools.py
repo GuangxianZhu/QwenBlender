@@ -47,7 +47,9 @@ SPECS = [
         {"a": S, "b": S}, ["a"]),
     _fn("list_parts", "列出上次构建出来的零件：英文名、中文名、尺寸、位置。写 demo.json 之前先看这个，零件名必须一字不差。"),
     _fn("build_page", "校验 demo.json（零件名、动画字段、表达式）并生成网页 out/index.html。有错会逐条指出来。"),
-    _fn("check_page", "检查网页：控制台报错、每一步是否正常、动画有没有动、手机上是否溢出；还会把每一步的动画摆到几个时刻，看零件动起来以后会不会互相穿模（转向反了、速比不对都能查出来）。返回电脑和手机的截图。"),
+    _fn("check_page", "检查网页：控制台报错、每一步是否正常、动画有没有动、手机上是否溢出；还会让动画真的走起来检查："
+        "动起来以后会不会穿模（转向反了、速比不对都能查出来）、贴着的零件会不会离开、铰点上有没有销子、转轴上有没有轴、"
+        "网页里写的摆角和行程对不对；并返回运动范围（摆角、行程、每个零件扫过的范围）。返回电脑和手机的截图。"),
     _fn("finish", "全部做完后调用。模型和网页还有没解决的问题时会被拒绝；确实解决不了的，在 unresolved 里如实写明。",
         {"summary": dict(S, description="做了什么，几句话"),
          "unresolved": dict(S, description="还没解决的问题。没有就留空")}, ["summary"]),
@@ -125,6 +127,11 @@ def format_build(rep):
         lines.append("  %d. %s%s  尺寸 %s  中心 %s  z %g~%g  接触：%s" % (
             i, p["name"], "「%s」" % p["cn"] if p["cn"] else "", _f(p["size"]), _p(p["center"]),
             p["min"][2], p["max"][2], "、".join(p["touches"]) or "无"))
+    if rep.get("joints"):
+        lines.append("销子和轴（demo.json 的连杆动画里，铰点和转轴上的点可以直接写它们的名字）：")
+        for j in rep["joints"]:
+            lines.append("  %s：%s %s，在 %s 附近，方向 %s" % (
+                j["name"], "铰接" if j["kind"] == "pin" else "穿过", "、".join(j["parts"]), _p(j["point"]), _axis_name(j["axis"])))
     if rep["issues"]:
         lines.append("必须修的问题：")
         lines += ["  ✗ " + x for x in rep["issues"]]
@@ -139,6 +146,66 @@ def format_build(rep):
         lines.append("附图是四视图：左上 FRONT（从 -Y 看），右上 RIGHT（从 +X 看），左下 TOP（从上往下，+Y 朝上），右下 ISO。"
                      "每格左下角的红绿蓝小箭头是 X/Y/Z 方向标，不是模型。对照图看：形状对不对、位置和朝向对不对、有没有缺东西。")
     return "\n".join(lines)
+
+
+def _axis_name(v):
+    for i, ch in enumerate("xyz"):
+        if abs(abs(v[i]) - 1) < 1e-3:
+            return ("-" if v[i] < 0 else "") + ch
+    return "(%s)" % ", ".join("%g" % round(c, 3) for c in v)
+
+
+_NUM_RULES = (
+    ("swing", "摆角", "°", 5.0, 3.0, 0.06,
+     re.compile(r"(?:摆角|摆幅|摆动范围|摆动角度|摆动的角度)([^。；;\n]{0,40})"), re.compile(r"([-+−]?\d+(?:\.\d+)?)\s*°")),
+    ("stroke", "行程", " mm", 0.5, 1.0, 0.05,
+     re.compile(r"行程([^。；;\n]{0,40})"), re.compile(r"([-+−]?\d+(?:\.\d+)?)\s*(?:mm|毫米)")),
+)
+
+
+def text_number_problems(cfg, parts, ranges):
+    """网页文字里写的摆角、行程，和按模型、动画算出来的对不对得上。返回问题列表。"""
+    texts = []
+    for k, w in (("title", "标题"), ("subtitle", "副标题")):
+        if cfg.get(k):
+            texts.append((w, str(cfg[k])))
+
+    def readouts(where, rs):
+        for r in rs if isinstance(rs, list) else []:
+            if isinstance(r, dict) and re.fullmatch(r"\s*\d+(\.\d+)?\s*", str(r.get("expr", ""))):
+                texts.append(("%s读数「%s」" % (where, r.get("label", "")),
+                              "%s %s%s" % (r.get("label", ""), str(r["expr"]).strip(), r.get("unit", ""))))
+
+    readouts("", cfg.get("readouts"))
+    for i, st in enumerate(cfg.get("steps", []) if isinstance(cfg.get("steps"), list) else []):
+        if isinstance(st, dict):
+            texts.append(("第 %d 步的文字" % (i + 1), "%s。%s" % (st.get("title", ""), st.get("text", ""))))
+            readouts("第 %d 步的" % (i + 1), st.get("readouts"))
+    for p in parts or []:
+        if p.get("info"):
+            texts.append(("零件 %s 的说明（model.py 里 part 的 info）" % p["name"], str(p["info"])))
+    out = []
+    for key, what, unit, floor, tol_abs, tol_rel, rx_clause, rx_num in _NUM_RULES:
+        actual = sorted({v for r in ranges for v in r.get(key, [])})
+        if not actual:
+            continue
+        for where, text in texts:
+            for m in rx_clause.finditer(text):
+                nums = [float(x.replace("−", "-")) for x in rx_num.findall(m.group(1))]
+                if not nums:
+                    continue
+                cand = {abs(v) for v in nums} | {abs(a - b) for a in nums for b in nums if a != b}
+                if any(abs(c - x) <= max(tol_abs, tol_rel * x) for c in cand for x in actual):
+                    continue
+                big = [abs(v) for v in nums if abs(v) >= floor]
+                if not big:
+                    continue
+                out.append("%s写的%s是 %g%s，按模型和动画算出来是 %s。把它改成算出来的数" % (
+                    where, what, big[0], unit, "、".join("%g%s" % (x, unit) for x in actual)))
+                break
+        if len(out) >= 6:
+            break
+    return out
 
 
 # ------------------------------------------------------------------ 实现
@@ -402,19 +469,25 @@ def t_check_page(job, a):
     if job.state.get("page_stale") or not (job.state.get("page") or {}).get("ok"):
         return "网页还没生成，或者文件改过之后没有重新生成。先 build_page", []
     r = browser.check(job.path, job.cfg)
-    # 运动检查：把每一步的动画摆到几个时刻，看零件动起来以后会不会互相穿模（转向反了、速比不对、连杆撞到别的零件）
+    # 运动检查：动起来以后会不会穿模、贴着的零件会不会离开、铰点和转轴上有没有东西；再算出运动范围
+    range_lines = []
     cfg_demo, _ = page.load_json(job.file("demo.json"))
     if cfg_demo and any(isinstance(s_, dict) and s_.get("anim") for s_ in cfg_demo.get("steps", [])):
         mo = blender.run(job.cfg, "motion", job.path)
-        if mo.get("problems"):
-            r["errors"] = r["errors"] + mo["problems"] + [
-                "（齿轮、蜗轮蜗杆、皮带轮这类：多半是转向反了或者速比不对，把其中一个的 speed 取负，或者核对齿数比；"
-                "连杆这类：检查 center / crank_pin / slider_pin 这些点是不是模型里铰点的真实位置，或者给被撞的零件开槽让路）"]
+        probs = list(mo.get("problems", []))
+        if any("穿模" in x for x in probs):
+            probs.append("（动起来穿模的常见原因——齿轮、蜗轮蜗杆、皮带轮：转向反了或者速比不对，把其中一个的 speed 取负，或者核对齿数比；"
+                         "连杆：铰点写得和模型里的真实位置不一样，或者运动的零件路上有东西挡着，给被撞的零件开槽或挪开）")
+        parts_now, _ = page.load_json(job.out("parts.json"))
+        probs += text_number_problems(cfg_demo, parts_now or [], mo.get("ranges", []))
+        if probs:
+            r["errors"] = r["errors"] + probs
             r["ok"] = False
-        for n_ in mo.get("notes", []):
-            r["warnings"].append(n_)
+        r["warnings"] += list(mo.get("warnings", [])) + list(mo.get("notes", []))
         if not mo.get("ok") and mo.get("error"):
             r["warnings"].append("运动检查没跑起来：%s" % mo["error"].get("msg", ""))
+        for rg in mo.get("ranges", []):
+            range_lines += ["  第 %d 步：%s" % (rg["step"], ln) for ln in rg["lines"]]
     job.state["check"] = {"ok": r["ok"], "errors": r["errors"], "warnings": r["warnings"]}
     lines = []
     info = r.get("info") or {}
@@ -426,6 +499,11 @@ def t_check_page(job, a):
     if r["warnings"]:
         lines.append("提醒：")
         lines += ["  ! " + w for w in r["warnings"][:10]]
+    if range_lines:
+        lines.append("运动范围（按模型和动画算出来的，网页里写的数字要和它一致）：")
+        lines += range_lines[:14]
+    if not r["ok"]:
+        lines.append("下一步：问题在 model.py 的，改完依次 build_model → build_page → check_page；只在 demo.json 的，改完 build_page → check_page。")
     names = {"page_desktop.png": "电脑上的第 1 步", "page_last.png": "电脑上的最后一步", "page_mobile.png": "手机上的第 1 步"}
     imgs = [job.out(n) for n in r["images"]]
     if imgs:

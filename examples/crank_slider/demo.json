@@ -25,7 +25,7 @@
       "ghost": ["Cylinder"],
       "anim": [
         {"type": "crank_slider", "id": "m", "crank": "Crank", "rod": "Rod", "slider": ["Piston", "PistonPin"],
-         "center": [0, 0, 0], "crank_pin": [15, 0, 0], "slider_pin": [0, 0, 58.09], "axis": "y", "slide": "z", "speed": "rpm * 6"}
+         "center": [0, 0, 0], "crank_pin": [15, 0, 0], "slider_pin": "PistonPin", "axis": "y", "slide": "z", "speed": "rpm * 6"}
       ],
       "readouts": [
         {"label": "曲柄转角", "expr": "m_angle", "unit": "°", "digits": 0},
@@ -40,7 +40,7 @@
       "highlight": ["Piston"],
       "anim": [
         {"type": "crank_slider", "id": "m", "crank": "Crank", "rod": "Rod", "slider": ["Piston", "PistonPin"],
-         "center": [0, 0, 0], "crank_pin": [15, 0, 0], "slider_pin": [0, 0, 58.09], "axis": "y", "slide": "z", "speed": "rpm * 6"}
+         "center": [0, 0, 0], "crank_pin": [15, 0, 0], "slider_pin": "PistonPin", "axis": "y", "slide": "z", "speed": "rpm * 6"}
       ],
       "readouts": [
         {"label": "活塞位置", "expr": "m_pos", "unit": "mm", "digits": 1},
