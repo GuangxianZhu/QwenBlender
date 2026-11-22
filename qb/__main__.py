@@ -18,6 +18,7 @@
     python -m qb help    [函数名|demo|custom]
     python -m qb examples "关键词"
     python -m qb bpy "关键词"
+    python -m qb calc four_bar crank=20 coupler=70 rocker=40 frame=60
 """
 import os
 import sys
@@ -51,6 +52,17 @@ def main(argv=None):
         return 0
     if cmd == "bpy":
         print(search.search_bpy(" ".join(rest), cfg))
+        return 0
+    if cmd == "calc":
+        from . import calc
+        args = {"kind": rest[0] if rest else ""}
+        for kv in rest[1:]:
+            k, _, v = kv.partition("=")
+            try:
+                args[k] = float(v)
+            except ValueError:
+                args[k] = v.lower() == "true" if v.lower() in ("true", "false") else v
+        print(calc.run(args))
         return 0
     if cmd == "new":
         want_page = "--no-page" not in rest

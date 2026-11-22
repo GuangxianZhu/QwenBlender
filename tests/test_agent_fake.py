@@ -47,10 +47,13 @@ SCRIPT = [
     ({"tool_calls": [call("write_file", name="model.py", content=OVERLAP)]}, lambda t: "六角头螺栓" in t),
     ({"tool_calls": [call("build_model")]}, None),
     ({"tool_calls": [call("measure", a="Bolt", b="PlateLower"), call("finish", summary="好了")]},
-     lambda t: "穿模" in t and "Bolt" in t),                                   # 螺栓直接插进没打孔的板
+     lambda t: "穿模" in t and "Bolt" in t and "打孔" in t),                    # 螺栓直接插进没打孔的板，提示里说要打孔
     ({"tool_calls": [call("write_file", name="model.py", content=GOOD_MODEL)]},
      lambda t: "还不能结束" in t or "还有问题" in t),                               # finish 被拒绝
     ({"tool_calls": [call("build_model")]}, None),
+    ({"tool_calls": [call("calc", kind="screw", pitch="1.25", turns=4), call("restore", name="model.py")]},
+     lambda t: "构建成功：6 个零件" in t and "必须修的问题" not in t and "解决了" in t),   # 和上一次比，问题解决了
+    ({"tool_calls": [call("build_model")]}, lambda t: "走 5 mm" in t and "已把 model.py 退回" in t),
     ({"tool_calls": [call("section", axis="x"), call("look", az=30, el=-20, focus="Nut"), call("list_parts")]},
      lambda t: "构建成功：6 个零件" in t and "必须修的问题" not in t),
     ({"tool_calls": [call("write_file", name="demo.json", content=GOOD_DEMO.replace('"part": "Nut", "type"', '"part": "Nutt", "type"'))]},
@@ -92,7 +95,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
             assert req["model"] == "qwen3.8:27b-q8_0", "应该自动选中 q8 的 qwen：%s" % req["model"]
             assert req["stream"] is True and req.get("think") is True and req["options"]["num_ctx"] > 0
             assert msgs[0]["role"] == "system" and "qblib 速查" in msgs[0]["content"]
-            assert len(req["tools"]) == 15
+            assert len(req["tools"]) == 17
             with_img = [m for m in msgs if m.get("images")]
             assert len(with_img) <= 1, "历史里应该只保留最后一组图"
             for m in with_img:

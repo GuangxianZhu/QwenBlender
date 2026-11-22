@@ -215,7 +215,23 @@ def main():
     assert r["ok"] and abs(r["ranges"][0]["stroke"][0] - want) < 0.3, (r, want)
     r = motion(ssrc % 24, sa, "mo_s_short")
     assert any("探到外面" in x and "Slider" in x for x in r["warnings"]) or any("离开" in x for x in r["problems"]), r
-    print("运动检查：转向、速比、连杆铰点、挡路的零件、缺销子、缺轴、滑出导轨都能查出来，摆角和行程算得对")
+    # 在动的零件被不透明的零件挡住，看不到它动
+    vsrc = ("from qblib import *\ncyl = part(tube(30, 22, 30), 'Cyl')\nmat(cyl, 'steel')\npis = part(at(cylinder(21.6, 14), 0, 0, 8), 'Piston')\n"
+            "cap = part(at(cylinder(30, 3), 0, 0, 30), 'Cap')\nfloor = part(at(box(40, 40, 3), 0, 0, -3), 'Floor')\n")
+    va = [{"part": "Piston", "type": "spin", "axis": "z", "speed": 60}]
+
+    def motion_step(src, step, name):
+        r = build(cfg, src, name)
+        assert r.get("ok") and not r["issues"], (r.get("issues"), r.get("error"))
+        d = os.path.join(tempfile.gettempdir(), "qb_test_" + name)
+        json.dump({"title": "t", "steps": [dict({"title": "转", "text": "x"}, **step)]}, open(os.path.join(d, "demo.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        return blender.run(cfg, "motion", d)
+
+    r = motion_step(vsrc, {"anim": va, "view": "front"}, "mo_v_hid")
+    assert not r["ok"] and any("Piston 在动" in x and "ghost" in x for x in r["problems"]), r
+    assert motion_step(vsrc, {"anim": va, "view": "front", "ghost": ["Cyl"]}, "mo_v_ghost")["ok"]
+    assert motion_step(vsrc, {"anim": va, "view": "front", "highlight": ["Piston"]}, "mo_v_hl")["ok"]
+    print("运动检查：转向、速比、连杆铰点、挡路的零件、缺销子、缺轴、滑出导轨、被挡住看不到都能查出来，摆角和行程算得对")
 
     # 对轴摆放、铰接：位置算对，孔打好，报错说清楚
     near = lambda a, b, tol=0.05: all(abs(x - y) <= tol for x, y in zip(a, b))
@@ -250,6 +266,21 @@ def main():
         r = build(cfg, "from qblib import *\n" + src + "\n", "axerr")
         assert not r.get("ok") and word in r["error"]["msg"], (src, r.get("error"))
     print("对轴摆放和铰接：aim / on_axis / pin_joint / shaft_through 位置、打孔、报错都对")
+
+    # 穿模怎么改：放偏了的给出挪法，整个穿过去的提示打孔；被挡住看不到的零件写成文字
+    hsrc = ("from qblib import *\nbase = part(box(60, 40, 6), 'Base')\nblk = part(at(box(20, 20, 20), 0, 0, 4), 'Block')\n"
+            "rod = part(at(rot(cylinder(8, 80), 0, 90, 0), -40, 0, 16), 'Rod')\n"
+            "cyl = part(at(tube(30, 22, 30), 100, 0, 0), 'Cyl')\nmat(cyl, '%s')\npis = part(at(cylinder(21.6, 14), 100, 0, 8), 'Piston')\n"
+            "cap = part(at(cylinder(30, 3), 100, 0, 30), 'Cap')\nmat(cap, '%s')\nfloor = part(at(box(40, 40, 3), 100, 0, -3), 'Floor')\n")
+    r = build(cfg, hsrc % ("steel", "steel"), "hint")
+    i1 = [x for x in r["issues"] if "Base" in x and "Block" in x][0]
+    assert "改法" in i1 and "Block 往 +z 挪 2.0" in i1, i1
+    i2 = [x for x in r["issues"] if "Block" in x and "Rod" in x][0]
+    assert "分不开" in i2 and "给 Block 打孔" in i2, i2
+    assert any("Piston 在四个视图里都看不到" in x and "ghost" in x for x in r["hidden"]), r["hidden"]
+    r = build(cfg, hsrc % ("glass", "glass"), "hint2")
+    assert not any("Piston" in x for x in r["hidden"]), r["hidden"]                       # 透明的缸筒不算挡
+    print("改法提示和遮挡报告：正确")
 
     # 不用 qblib、直接写 bpy 的脚本：改 location / rotation_euler、设了父子关系的，位置都要算对
     r = build(cfg, "import bpy, bmesh\n"

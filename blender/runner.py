@@ -304,6 +304,121 @@ def gear_mesh(a, b):
     return abs(dist - want) < 0.15 and a.lo[2] < b.hi[2] and b.lo[2] < a.hi[2] if abs(za.z) > 0.99 else abs(dist - want) < 0.15
 
 
+_SIX = (("+x", (1, 0, 0)), ("-x", (-1, 0, 0)), ("+y", (0, 1, 0)), ("-y", (0, -1, 0)), ("+z", (0, 0, 1)), ("-z", (0, 0, -1)))
+
+
+def _pen_points(src, dst, shift=None):
+    """src 的采样点里扎进 dst 内部的那些（shift 给了就先把 src 平移）。"""
+    out = []
+    lo, hi = dst.lo - FIT, dst.hi + FIT
+    for p in src.pts:
+        q = p + shift if shift is not None else p
+        if not (lo[0] <= q.x <= hi[0] and lo[1] <= q.y <= hi[1] and lo[2] <= q.z <= hi[2]):
+            continue
+        near = dst.bvh.find_nearest(q)
+        if near[0] is not None and near[3] > TOL and dst.inside(q):
+            out.append(q)
+    return out
+
+
+def fix_hint(a, b, pen):
+    """穿模怎么改。挪一小段就能分开的，给出挪谁、往哪边、挪多少；挪不开的，提示打孔。"""
+    if not (a.closed and b.closed):
+        return ""
+    pa, pb = _pen_points(a, b), _pen_points(b, a)
+    if not pa and not pb:
+        return ""
+    best = None
+    for name, e in _SIX:
+        e = Vector(e)
+        need = 0.0
+        for p in pa:                                   # a 往 e 挪：a 扎在 b 里的点要沿 e 走出 b
+            hit = b.bvh.ray_cast(p, e)
+            need = max(need, hit[3] if hit[0] is not None else 1e9)
+        for p in pb:                                   # 等价于 b 扎在 a 里的点沿 -e 走出 a
+            hit = a.bvh.ray_cast(p, -e)
+            need = max(need, hit[3] if hit[0] is not None else 1e9)
+        if best is None or need < best[0]:
+            best = (need, name, e)
+    need, name, e = best
+    small = min(min(a.hi - a.lo), min(b.hi - b.lo))
+    if need < 1e8 and need <= max(3.0, 3 * pen) and need <= 0.6 * small:
+        sh = e * (need + 0.02)
+        if not _pen_points(a, b, sh) and not _pen_points(b, a, -sh):
+            other = "-" + name[1] if name[0] == "+" else "+" + name[1]
+            first, second = ((a.name, name), (b.name, other)) if abs(a.volume) <= abs(b.volume) else ((b.name, other), (a.name, name))
+            return "。改法：把 %s 往 %s 挪 %.2f mm（或者把 %s 往 %s 挪这么多）就不穿了" % (first + (need + 0.02,) + second)
+    thin, thick = (a, b) if abs(a.volume) <= abs(b.volume) else (b, a)
+    return ("。挪一点分不开，不像是放偏了：如果是 %s 要穿过 %s，给 %s 打孔（hole / shaft_through / pin_joint）；"
+            "不是的话检查这两个零件的位置和尺寸" % (thin.name, thick.name, thick.name))
+
+
+# ------------------------------------------------------------------ 把图变成字
+
+def _alpha(obj):
+    """零件材质的不透明度（1 不透明）。"""
+    m = obj.active_material
+    if m is None:
+        return 1.0
+    try:
+        bsdf = next((n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None) if m.node_tree else None
+        if bsdf is not None and not bsdf.inputs["Alpha"].is_linked:
+            return float(min(bsdf.inputs["Alpha"].default_value, m.diffuse_color[3]))
+    except Exception:
+        pass
+    return float(m.diffuse_color[3])
+
+
+def hidden_from(geos, v, subjects=None, blockers=None, n_pts=120):
+    """从方向 v（指向相机）看，哪些零件被别的零件挡住了。返回 {零件名: (被挡住的比例, 主要是谁挡的)}。
+    只数零件朝向相机那一面的采样点；半透明的零件不算遮挡。"""
+    v = Vector(v).normalized()
+    names = [g.name for g in geos]
+    solid = [g for g in geos if (blockers is None or g.name in blockers) and _alpha(g.obj) >= 0.6]
+    out = {}
+    for g in geos:
+        if subjects is not None and g.name not in subjects:
+            continue
+        pts = g.pts if len(g.pts) <= n_pts else g.pts[::max(1, len(g.pts) // n_pts)]
+        facing = blocked = 0
+        who = {}
+        for p in pts:
+            o = p + v * 1e-3
+            if g.bvh.ray_cast(o, v)[0] is not None:        # 背对相机的一面，本来就看不到
+                continue
+            facing += 1
+            for q in solid:
+                if q is g:
+                    continue
+                if q.bvh.ray_cast(o, v)[0] is not None:
+                    blocked += 1
+                    who[q.name] = who.get(q.name, 0) + 1
+                    break
+        if facing >= 8:
+            out[g.name] = (blocked / facing, max(who, key=who.get) if who else None)
+    return out
+
+
+def view_text(geos):
+    """四视图里看不到的零件，写成文字。"""
+    if len(geos) < 2:
+        return []
+    per = [(label.split("  ")[0], hidden_from(geos, view_dir(az, el))) for label, az, el in SHEET_VIEWS]
+    lines, always = [], []
+    for g in geos:
+        hs = [h.get(g.name) for _, h in per]
+        if all(x is not None and x[0] >= 0.9 for x in hs):
+            always.append((g.name, hs[-1][1]))
+    for name, by in always:
+        lines.append("%s 在四个视图里都看不到（被 %s 挡住）。要确认它就用 section 剖开；网页里讲它的那一步要把 %s 写进 ghost" % (name, by, by))
+    skip = {n for n, _ in always}
+    for view, h in per:
+        hid = [(n, x[1]) for n, x in h.items() if x[0] >= 0.9 and n not in skip]
+        if hid:
+            lines.append("%s 视图里看不到：%s" % (view, "、".join("%s（被 %s 挡住）" % (n, by) for n, by in hid[:8])))
+    return lines
+
+
 def r3(v, nd=2):
     return [round(float(c), nd) for c in v]
 
@@ -366,7 +481,7 @@ def measure_all(objs, plan=None):
                 pt = LAST_PEN_POINT[0]
                 where = "，最深的地方在 (%g, %g, %g) 附近" % tuple(round(c, 1) for c in pt) if pt else ""
                 if key not in allow_ov:
-                    issues.append("穿模：%s 和 %s 互相扎进去了，最深约 %.2f mm%s" % (a.name, b.name, pen, where))
+                    issues.append("穿模：%s 和 %s 互相扎进去了，最深约 %.2f mm%s%s" % (a.name, b.name, pen, where, fix_hint(a, b, pen)))
                 elif pen > 1.0:
                     issues.append("穿模：%s 和 %s 用 allow_overlap 声明了重叠，但扎进去约 %.2f mm%s，这不是配合，是实体穿过实体。"
                                   "给被穿过的零件用 hole() 打孔，然后删掉这条 allow_overlap" % (a.name, b.name, pen, where))
@@ -805,9 +920,10 @@ def mode_build(job, a):
         except Exception:
             plan = None
     rep["stage"] = "measure"
-    m, _ = measure_all(objs, plan)
+    m, geos = measure_all(objs, plan)
     rep.update(m)
     rep["joints"] = joint_list()
+    rep["hidden"] = view_text(geos)
     json.dump(m["parts"], open(os.path.join(out, "parts.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out, "model.blend"), check_existing=False)
     rep["stage"] = "export"
@@ -976,6 +1092,8 @@ def _sangle(u, v, n):
 
 
 POINT_KEYS = ("pivot", "center", "crank_pin", "slider_pin", "a", "b", "c", "d")
+PAGE_VIEWS = {"front": (0, 0), "back": (180, 0), "right": (90, 0), "left": (-90, 0), "top": (0, 89.5), "bottom": (0, -89.5),
+              "iso": (35, 26), "iso2": (-145, 26)}        # 和 web/viewer.js 里的 VIEWS 一样
 
 
 def resolve_points(anims, centers):
@@ -1319,6 +1437,19 @@ def mode_motion(job, a):
             if lines:
                 ranges.append({"step": si + 1, "title": step.get("title", ""), "lines": lines, "swing": swing, "stroke": stroke})
             ever = set(sweep_lo)
+            # ---- 在动的零件从这一步的视角看不看得见
+            vw = step.get("view")
+            preset = vw if isinstance(vw, str) else (vw or {}).get("preset") if isinstance(vw, dict) else None
+            if cyc and not step.get("highlight") and not step.get("section") and not step.get("explode") and (vw is None or preset in PAGE_VIEWS):
+                az, el = PAGE_VIEWS.get(preset or "iso")
+                gone = set(_names(step.get("ghost"))) | set(_names(step.get("hide")))
+                main = [nm for x in cyc for k in ("part", "crank", "rod", "slider", "coupler", "rocker") for nm in _names(x.get(k))[:1]]
+                hid = hidden_from(list(static.values()), view_dir(az, el), subjects=set(main), blockers=set(names) - gone)
+                for nm in dict.fromkeys(main):
+                    if nm in hid and hid[nm][0] >= 0.8:
+                        msg = "%s：%s 在动，但从这一步的视角（%s）看它有 %d%% 被 %s 挡住。把 %s 写进这一步的 ghost，或者换个视角，或者用 section" % (
+                            where, nm, preset or "默认的 iso", round(100 * hid[nm][0]), hid[nm][1], hid[nm][1])
+                        (problems if hid[nm][0] >= 0.97 else warnings).append(msg)
             # ---- 铰点和转轴
             jk = json.dumps([{k: v for k, v in x.items() if k not in ("speed", "angle", "delay")} for x in cyc], sort_keys=True, ensure_ascii=False)
             if cyc and jk not in seen_joint:

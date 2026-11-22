@@ -4,9 +4,10 @@ import difflib
 import json
 import os
 import re
+import shutil
 import time
 
-from . import blender, browser, page, search
+from . import blender, browser, calc, page, search
 
 FILES = ("model.py", "demo.json", "custom.js")
 
@@ -38,6 +39,16 @@ SPECS = [
         {"name": dict(S, enum=list(FILES)), "content": S}, ["name", "content"]),
     _fn("edit_file", "改文件里的一小段：把 old 换成 new。old 必须和文件里的原文一字不差，而且只出现一次。小修改用这个，比重写整个文件快。",
         {"name": dict(S, enum=list(FILES)), "old": S, "new": S}, ["name", "old", "new"]),
+    _fn("calc", "机构计算器，建模之前先把数算清楚，不要心算。kind 选一种：four_bar（给 crank coupler rocker frame 四个杆长 → 能不能转整圈、摆角、传动角；"
+        "或者给 crank 和 want_swing → 按想要的摆角反推杆长）、crank_slider（crank rod offset → 行程）、gear（z1 z2 → 速比和转向）、"
+        "worm（teeth starts → 减速比）、belt（d1 d2 → 速比）、planetary（sun ring → 行星轮齿数和各自的转速）、screw（pitch 加 turns 或 travel）。",
+        {"kind": dict(S, enum=list(calc.KINDS)), "crank": N, "coupler": N, "rocker": N, "frame": dict(N, description="两个固定转轴之间的距离"),
+         "arm": dict(N, description="摇杆轴上固定的那根臂的长度（可选）"), "want_swing": dict(N, description="想要的摆角（度）"),
+         "rod": N, "offset": N, "z1": dict(N, description="主动轮齿数"), "z2": dict(N, description="从动轮齿数"), "internal": B, "module": N,
+         "teeth": dict(N, description="蜗轮齿数"), "starts": dict(N, description="蜗杆头数"), "q": N, "d1": N, "d2": N, "center": N,
+         "sun": N, "ring": N, "planets": N, "pitch": N, "turns": N, "travel": N}, ["kind"]),
+    _fn("restore", "把 model.py 或 demo.json 退回到上一个通过检查的版本。越改越糟的时候用。",
+        {"name": dict(S, enum=["model.py", "demo.json"])}, ["name"]),
     _fn("build_model", "在 Blender 里运行 model.py。返回：报错位置、每个零件的尺寸和位置、检查结果（穿模/悬空/破面/和计划不符），外加一张四视图。每写完一两个零件就调用一次。"),
     _fn("look", "从指定角度再看一眼上次构建的模型（返回一张图）。az=0 正前方（相机在 -Y），az=90 右侧（相机在 +X），az=180 背面；el 仰角，90 是正上方，负数是从下往上看。",
         {"az": N, "el": N, "focus": dict(S, description="可选：对准并放大某个零件")}, ["az", "el"]),
@@ -140,12 +151,32 @@ def format_build(rep):
         lines += ["  ! " + x for x in rep["warnings"]]
     if not rep["issues"] and not rep["warnings"]:
         lines.append("检查：没有穿模、悬空、破面")
+    if rep.get("hidden"):
+        lines.append("图上看不到的零件（报告里的数字照常可信）：")
+        lines += ["  · " + x for x in rep["hidden"][:8]]
     if rep.get("printed"):
         lines.append("脚本打印的内容：\n" + rep["printed"][-500:])
     if rep.get("image"):
         lines.append("附图是四视图：左上 FRONT（从 -Y 看），右上 RIGHT（从 +X 看），左下 TOP（从上往下，+Y 朝上），右下 ISO。"
                      "每格左下角的红绿蓝小箭头是 X/Y/Z 方向标，不是模型。对照图看：形状对不对、位置和朝向对不对、有没有缺东西。")
     return "\n".join(lines)
+
+
+def _issue_key(text):
+    """一条问题去掉数字以后的样子，用来比较前后两次是不是同一个问题。"""
+    head = re.split(r"[，。（(：:]", str(text).replace("动起来以后穿模：", "动起来以后穿模 "), 1)
+    return re.sub(r"[-+]?\d+(?:\.\d+)?", "#", head[0] + (re.split(r"[，。]", head[1])[0] if len(head) > 1 else ""))[:80]
+
+
+def compare_issues(old, new):
+    """和上一次比：返回 (解决了的, 新出现的)。"""
+    ko, kn = {_issue_key(x): x for x in old or []}, {_issue_key(x): x for x in new or []}
+    return [ko[k] for k in ko if k not in kn], [kn[k] for k in kn if k not in ko]
+
+
+def _short(text, n=46):
+    t = str(text)
+    return t if len(t) <= n else t[:n] + "…"
 
 
 def _axis_name(v):
@@ -353,6 +384,7 @@ def t_build_model(job, a):
         return "先调用 submit_plan 提交零件清单", []
     if not os.path.exists(job.file("model.py")):
         return "还没有 model.py，先用 write_file 写", []
+    prev = job.state.get("build")
     rep = blender.run(job.cfg, "build", job.path)
     job.state["build"] = {"ok": bool(rep.get("ok")), "issues": rep.get("issues", []), "warnings": rep.get("warnings", []),
                           "parts": len(rep.get("parts", [])), "time": time.time()}
@@ -360,7 +392,30 @@ def t_build_model(job, a):
     job.state["page_stale"] = True
     job.state["check"] = None
     imgs = [job.out("sheet.png")] if rep.get("ok") and rep.get("image") else []
-    return format_build(rep), imgs
+    text = format_build(rep)
+    good = job.out("good_model.py")
+    if rep.get("ok") and not rep.get("issues"):
+        shutil.copyfile(job.file("model.py"), good)                 # 留一份没有问题的版本，改坏了可以退回来
+        job.state["good_model_parts"] = len(rep.get("parts", []))
+    extra = []
+    if prev and prev.get("ok") and rep.get("ok"):
+        fixed, fresh = compare_issues(prev.get("issues"), rep.get("issues"))
+        if fixed or fresh:
+            extra.append("和上一次构建比：解决了 %d 个问题，新出现 %d 个%s。" % (
+                len(fixed), len(fresh), "（新出现的：%s）" % "；".join(_short(x) for x in fresh[:3]) if fresh else ""))
+        lost = prev.get("parts", 0) - len(rep.get("parts", []))
+        if lost > 0:
+            extra.append("零件比上一次少了 %d 个。" % lost)
+    # 连续两次比上一次更糟（问题变多，或者原来能跑现在跑不通），才提醒可以退回去
+    n_now = len(rep.get("issues", [])) if rep.get("ok") else 10 ** 6
+    n_prev = (len(prev.get("issues", [])) if prev.get("ok") else 10 ** 6) if prev else None
+    if n_prev is not None and n_now > n_prev:
+        job.state["worse_streak"] = job.state.get("worse_streak", 0) + 1
+    elif n_prev is None or n_now < n_prev or n_now == 0:
+        job.state["worse_streak"] = 0
+    if job.state.get("worse_streak", 0) >= 2 and os.path.exists(good):
+        extra.append("连续两次越改问题越多。上一个没有问题的 model.py 还留着（%d 个零件）：调用 restore(name=\"model.py\") 可以退回去，再一次只改一处。" % job.state.get("good_model_parts", 0))
+    return text + ("\n" + "\n".join(extra) if extra else ""), imgs
 
 
 def _err(rep):
@@ -488,7 +543,12 @@ def t_check_page(job, a):
             r["warnings"].append("运动检查没跑起来：%s" % mo["error"].get("msg", ""))
         for rg in mo.get("ranges", []):
             range_lines += ["  第 %d 步：%s" % (rg["step"], ln) for ln in rg["lines"]]
+    prev_ck = job.state.get("check_last")
     job.state["check"] = {"ok": r["ok"], "errors": r["errors"], "warnings": r["warnings"]}
+    job.state["check_last"] = {"ok": r["ok"], "errors": r["errors"]}
+    good_demo = job.out("good_demo.json")
+    if r["ok"]:
+        shutil.copyfile(job.file("demo.json"), good_demo)
     lines = []
     info = r.get("info") or {}
     if r["ok"]:
@@ -502,6 +562,13 @@ def t_check_page(job, a):
     if range_lines:
         lines.append("运动范围（按模型和动画算出来的，网页里写的数字要和它一致）：")
         lines += range_lines[:14]
+    if prev_ck:
+        fixed, fresh = compare_issues(prev_ck.get("errors"), r["errors"])
+        if fixed or fresh:
+            lines.append("和上一次检查比：解决了 %d 个问题，新出现 %d 个%s。" % (
+                len(fixed), len(fresh), "（新出现的：%s）" % "；".join(_short(x) for x in fresh[:3]) if fresh else ""))
+        if prev_ck.get("ok") and not r["ok"] and os.path.exists(good_demo):
+            lines.append("上一个通过检查的 demo.json 还留着：调用 restore(name=\"demo.json\") 可以退回去。")
     if not r["ok"]:
         lines.append("下一步：问题在 model.py 的，改完依次 build_model → build_page → check_page；只在 demo.json 的，改完 build_page → check_page。")
     names = {"page_desktop.png": "电脑上的第 1 步", "page_last.png": "电脑上的最后一步", "page_mobile.png": "手机上的第 1 步"}
@@ -510,6 +577,33 @@ def t_check_page(job, a):
         lines.append("附图：" + "、".join(names.get(n, n) for n in r["images"]) +
                      "。看一下：模型有没有显示完整、文字有没有挤在一起、视角合不合适。")
     return "\n".join(lines), imgs
+
+
+def t_calc(job, a):
+    args = {}
+    for k, v in a.items():
+        if isinstance(v, str) and k != "kind":
+            try:
+                v = float(v)
+            except ValueError:
+                if v.strip().lower() in ("true", "false"):
+                    v = v.strip().lower() == "true"
+        args[k] = v
+    return calc.run(args), []
+
+
+def t_restore(job, a):
+    name = a.get("name")
+    src = {"model.py": job.out("good_model.py"), "demo.json": job.out("good_demo.json")}.get(name)
+    if src is None:
+        return "restore 只能退回 model.py 或 demo.json，现在写的是 %r" % (name,), []
+    if not os.path.exists(src):
+        return "%s 还没有通过检查的版本可以退回。继续改现在这一版" % name, []
+    shutil.copyfile(src, job.file(name))
+    _touch(job, name)
+    n = len(open(job.file(name), encoding="utf-8-sig").read().splitlines())
+    return "已把 %s 退回到上一个通过检查的版本（%d 行）。下一步：%s" % (
+        name, n, "build_model，然后一次只改一处" if name == "model.py" else "build_page → check_page"), []
 
 
 def problems(job):
@@ -552,7 +646,7 @@ def t_finish(job, a):
 
 IMPL = {"submit_plan": t_submit_plan, "lib_help": t_lib_help, "search_examples": t_search_examples,
         "search_bpy": t_search_bpy, "read_file": t_read_file, "write_file": t_write_file, "edit_file": t_edit_file,
-        "build_model": t_build_model, "look": t_look, "section": t_section, "measure": t_measure,
+        "calc": t_calc, "restore": t_restore, "build_model": t_build_model, "look": t_look, "section": t_section, "measure": t_measure,
         "list_parts": t_list_parts, "build_page": t_build_page, "check_page": t_check_page, "finish": t_finish}
 
 
