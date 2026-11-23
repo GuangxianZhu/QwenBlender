@@ -52,11 +52,20 @@ def image_b64(path):
         return base64.b64encode(f.read()).decode("ascii")
 
 
+def looping(text, block=160, window=4000, times=4):
+    """这段文字的结尾是不是在原地打转：最后 block 个字在最近 window 个字里重复出现了 times 次以上。"""
+    if len(text) < block * times:
+        return False
+    return text[-window:].count(text[-block:]) >= times
+
+
 def chat(cfg, model, messages, tools, on_delta=None, think=None, _retry=False):
-    """发一轮对话，返回 {'content', 'thinking', 'tool_calls', 'prompt_tokens', 'output_tokens'}。
-    on_delta(kind, text)：kind 是 'thinking' 或 'content'，流式输出用。"""
+    """发一轮对话，返回 {'content', 'thinking', 'tool_calls', 'prompt_tokens', 'output_tokens', 'looped', 'cut'}。
+    on_delta(kind, text)：kind 是 'thinking' 或 'content'，流式输出用。
+    looped：模型在重复同一段话，已经打断；cut：输出到了长度上限被截断。"""
     body = {"model": model, "messages": messages, "stream": True, "keep_alive": "30m",
-            "options": {"num_ctx": int(cfg["num_ctx"]), "temperature": float(cfg["temperature"])}}
+            "options": {"num_ctx": int(cfg["num_ctx"]), "temperature": float(cfg["temperature"]),
+                        "num_predict": int(cfg.get("max_output", 16000))}}
     if tools:
         body["tools"] = tools
     use_think = cfg.get("think", True) if think is None else think
@@ -64,7 +73,8 @@ def chat(cfg, model, messages, tools, on_delta=None, think=None, _retry=False):
         body["think"] = bool(use_think)  # 不写的话，带思考能力的模型默认是开着的，所以关也要明说
     req = urllib.request.Request(cfg["ollama_host"] + "/api/chat", data=json.dumps(body).encode("utf-8"),
                                  headers={"Content-Type": "application/json"})
-    out = {"content": "", "thinking": "", "tool_calls": [], "prompt_tokens": 0, "output_tokens": 0}
+    out = {"content": "", "thinking": "", "tool_calls": [], "prompt_tokens": 0, "output_tokens": 0, "looped": False, "cut": False}
+    checked = 0
     try:
         with urllib.request.urlopen(req, timeout=cfg["request_timeout"]) as r:
             for raw in r:
@@ -88,6 +98,13 @@ def chat(cfg, model, messages, tools, on_delta=None, think=None, _retry=False):
                 if ch.get("done"):
                     out["prompt_tokens"] = ch.get("prompt_eval_count", 0)
                     out["output_tokens"] = ch.get("eval_count", 0)
+                    out["cut"] = ch.get("done_reason") == "length"
+                n = len(out["thinking"]) + len(out["content"])
+                if n - checked >= 300:                   # 每多出几百个字看一眼：原地打转就掐断，不等它把上下文写满
+                    checked = n
+                    if looping(out["thinking"]) or looping(out["content"]):
+                        out["looped"] = True
+                        break
     except urllib.error.HTTPError as e:
         msg = e.read().decode("utf-8", "replace")
         try:

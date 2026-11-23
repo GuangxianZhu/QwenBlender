@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -51,8 +52,9 @@ SCRIPT = [
     ({"tool_calls": [call("write_file", name="model.py", content=GOOD_MODEL)]},
      lambda t: "还不能结束" in t or "还有问题" in t),                               # finish 被拒绝
     ({"tool_calls": [call("build_model")]}, None),
+    ({"loop": True}, lambda t: "构建成功：6 个零件" in t and "必须修的问题" not in t and "解决了" in t),   # 模型开始重复同一段话 → 应该被掐断
     ({"tool_calls": [call("calc", kind="screw", pitch="1.25", turns=4), call("restore", name="model.py")]},
-     lambda t: "构建成功：6 个零件" in t and "必须修的问题" not in t and "解决了" in t),   # 和上一次比，问题解决了
+     lambda t: "重复同一段话" in t and "直接调用一个工具" in t),                       # 被打断以后收到提醒
     ({"tool_calls": [call("build_model")]}, lambda t: "走 5 mm" in t and "已把 model.py 退回" in t),
     ({"tool_calls": [call("section", axis="x"), call("look", az=30, el=-20, focus="Nut"), call("list_parts")]},
      lambda t: "构建成功：6 个零件" in t and "必须修的问题" not in t),
@@ -93,7 +95,10 @@ class Fake(http.server.BaseHTTPRequestHandler):
         msgs = req["messages"]
         try:
             assert req["model"] == "qwen3.8:27b-q8_0", "应该自动选中 q8 的 qwen：%s" % req["model"]
-            assert req["stream"] is True and req.get("think") is True and req["options"]["num_ctx"] > 0
+            want_think = not state.get("after_loop")                 # 被打断后的那一轮不让它长篇思考
+            assert req["stream"] is True and req.get("think") is want_think and req["options"]["num_ctx"] > 0, "think 应该是 %s" % want_think
+            assert req["options"].get("num_predict", 0) > 0, "要限制一轮的输出长度"
+            state["after_loop"] = False
             assert msgs[0]["role"] == "system" and "qblib 速查" in msgs[0]["content"]
             assert len(req["tools"]) == 17
             with_img = [m for m in msgs if m.get("images")]
@@ -122,6 +127,23 @@ class Fake(http.server.BaseHTTPRequestHandler):
             state["fail"].append("第 %d 轮请求格式不对：%s" % (state["i"] + 1, e))
             reply = SCRIPT[min(state["i"], len(SCRIPT) - 1)][0]
         state["i"] += 1
+        if reply.get("loop"):                             # 一直重复同一段话，看客户端什么时候掐断
+            state["after_loop"] = True
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.end_headers()
+            blk = "轴应该穿过凸轮的转动中心，可是凸轮的 z 范围是 29 到 41，轴在 z=45，所以轴没有穿过凸轮。我要把凸轮加厚，或者把轴放低。等一下，再想想。\n" * 2
+            sent = 0
+            try:
+                for _ in range(400):
+                    self.wfile.write((json.dumps({"message": {"role": "assistant", "thinking": blk}, "done": False}, ensure_ascii=False) + "\n").encode("utf-8"))
+                    self.wfile.flush()
+                    sent += 1
+                    time.sleep(0.005)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+            state["loop_chunks"] = sent
+            return
         chunks = [{"message": {"role": "assistant", "thinking": "想一下…"}, "done": False}]
         if reply.get("content"):
             for k in range(0, len(reply["content"]), 40):
@@ -149,6 +171,7 @@ def main():
     assert state["i"] == len(SCRIPT), "剧本走了 %d / %d 轮" % (state["i"], len(SCRIPT))
     assert st["finished"] and not st.get("left"), st
     assert state["image_rounds"] >= 4 and state["max_images"] >= 3, state
+    assert 0 < state.get("loop_chunks", 0) < 400, "重复的输出应该被中途掐断：%s" % state.get("loop_chunks")
     for f in ("out/model.glb", "out/sheet.png", "out/section.png", "out/view.png", "out/index.html",
               "out/page_desktop.png", "out/page_mobile.png", "messages.json", "plan.json", "state.json"):
         assert os.path.exists(os.path.join(d, f)), "缺少 " + f

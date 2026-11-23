@@ -158,11 +158,25 @@ def run(job, cfg, task=None, feedback=None, console=None, model=None):
         with open(job.file("task.txt"), "w", encoding="utf-8") as f:
             f.write(task or "")
     con.line("模型：%s    任务目录：%s" % (model, job.path))
-    nudges, t0, step = 0, time.time(), 0
+    nudges, t0, step, no_think = 0, time.time(), 0, False
     for step in range(1, int(cfg["max_steps"]) + 1):
         _strip_old_images(messages)
         con.line("\n──── 第 %d 轮 ────" % step)
-        resp = ollama.chat(cfg, model, messages, spec, on_delta=con.delta)
+        resp = ollama.chat(cfg, model, messages, spec, on_delta=con.delta, think=False if no_think else None)
+        no_think = False
+        if resp.get("looped") or (resp.get("cut") and not resp["tool_calls"]):
+            # 原地打转或者写到长度上限：这一轮的输出不要，提醒一句，下一轮先不让它长篇思考
+            why = "你刚才在重复同一段话，已经被打断" if resp.get("looped") else "你刚才写得太长，被截断了"
+            con.line("\n（%s）" % why)
+            job.state["loops"] = job.state.get("loops", 0) + 1
+            if job.state["loops"] > 6:
+                con.line("\n模型反复打转，停止。")
+                break
+            messages.append({"role": "assistant", "content": "（这一轮的输出被打断了）"})
+            messages.append({"role": "user", "content": "（系统）%s。不要再反复想同一件事：拿不准模型现在是什么样，就用 list_parts、measure 或 read_file 看实际结果；"
+                                                        "想好了就只改一处，然后 build_model。现在直接调用一个工具。" % why})
+            no_think = True
+            continue
         calls = resp["tool_calls"] or parse_text_calls(resp["content"])
         amsg = {"role": "assistant", "content": resp["content"]}
         if calls:

@@ -13,6 +13,7 @@ DEFAULTS = {
     "temperature": 0.4,
     "request_timeout": 1800,    # 秒。预填充很长时不要掐断，掐断会让 Ollama 从头再算
     "max_steps": 80,
+    "max_output": 16000,        # 一轮最多生成多少个 token（思考 + 回答 + 工具参数）
     "blender": "auto",          # blender.exe 的路径；auto = 自动找；python = 用装了 bpy 模块的当前 Python
     "blender_timeout": 300,
     "render_res": 512,          # 四视图里每一格的像素
