@@ -10,6 +10,7 @@ part(w, "Worm", cn="蜗杆", info="转一圈，蜗轮只转过一个齿。")
 
 wheel = worm_wheel(M, TEETH, 14, bore=10)           # module、starts、q 要和蜗杆一样
 mesh_worm(wheel, w, side="+y")                      # 蜗轮放到蜗杆的 +Y 侧，中心距 = (20 + 60) / 2 = 40
+# 蜗轮和蜗杆在同一个高度上咬合（蜗轮的中面 z = 蜗杆轴线的 z = 40）。之后不要再单独挪蜗轮；整套要换高度，改上面 at(w, …) 的 z
 mat(wheel, "brass")
 part(wheel, "WormWheel", cn="蜗轮", info="30 齿。")
 # 网页里的转速：蜗轮 speed = 蜗杆 speed / 30（蜗杆绕 x 转，蜗轮绕 z 转）

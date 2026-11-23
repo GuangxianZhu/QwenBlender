@@ -56,6 +56,7 @@ def run_model(path):
     import qblib
     qblib._counter.clear()
     del qblib._JOINTS[:]
+    del qblib._MESHES[:]
     src = open(path, encoding="utf-8").read()
     buf = io.StringIO()
     old = sys.stdout
@@ -923,6 +924,7 @@ def mode_build(job, a):
     m, geos = measure_all(objs, plan)
     rep.update(m)
     rep["joints"] = joint_list()
+    rep["issues"] = rep["issues"] + mesh_kept(geos, m["parts"])
     rep["hidden"] = view_text(geos)
     json.dump(m["parts"], open(os.path.join(out, "parts.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out, "model.blend"), check_existing=False)
@@ -936,6 +938,34 @@ def mode_build(job, a):
     rep["stage"] = "done"
     rep["seconds"] = round(time.time() - t0, 1)
     return rep
+
+
+GEAR_KINDS = ("gear", "ring_gear", "worm", "worm_wheel")
+
+
+def mesh_kept(geos, parts):
+    """用 mesh / mesh_worm 对过齿的两个零件，构建完是不是还咬在一起。之后又单独挪动过其中一个的，报出来。"""
+    import qblib
+    by_obj = {g.obj: g for g in geos}
+    touches = {p["name"]: set(p.get("touches", [])) for p in parts}
+    out, seen = [], set()
+    for g, ref, fn in qblib._MESHES:
+        try:
+            a, b = by_obj.get(g), by_obj.get(ref)
+        except ReferenceError:
+            continue
+        if a is None or b is None or (a.name, b.name) in seen:
+            continue
+        seen.add((a.name, b.name))
+        if b.name in touches.get(a.name, ()):
+            continue
+        gap = bbox_gap(a, b)
+        if gap <= FIT:
+            gap = pair_relation(a, b)[0]
+        out.append("没咬上：%s 和 %s 用 %s 对好了齿，之后其中一个又被单独挪动或转动过，现在最近处隔着 %.1f mm，齿没有咬在一起。"
+                   "%s 之后不要再单独 move / at / rot 这两个零件；要整体换位置，就两个零件一起挪，或者把 %s 放到最后再调用" % (
+                       a.name, b.name, fn, gap, fn, fn))
+    return out
 
 
 def joint_list():
@@ -1275,6 +1305,23 @@ def joint_problems(anims, geos, base, where):
             return None
         return any(through(X, c, P, n) for X in geos if _line_in_bbox(geos[X], P, n, 0.0) for c in cs)
 
+    spinning = [a.get("part") for a in anims if a.get("type") == "spin" and a.get("part") in geos
+                and geos[a.get("part")].obj.get("qb_kind") in GEAR_KINDS]
+    all_gears = [n for n, g in geos.items() if g.obj.get("qb_kind") in GEAR_KINDS]
+    if len(spinning) >= 2:
+        for nm in spinning:
+            best = None
+            for other in all_gears:
+                if other == nm:
+                    continue
+                gap = bbox_gap(geos[nm], geos[other])
+                if gap <= FIT:
+                    gap = 0.0 if gear_mesh(geos[nm], geos[other]) else pair_relation(geos[nm], geos[other])[0]
+                if best is None or gap < best[0]:
+                    best = (gap, other)
+            if best is not None and best[0] > FIT:
+                out.append("%s：%s 在转，但它没有和别的齿轮或蜗杆咬上（离最近的 %s 还有 %.1f mm），现在是各转各的。"
+                           "回 model.py 用 mesh / mesh_worm 把它对到位，对好以后不要再单独挪它" % (where, nm, best[1], best[0]))
     for a in anims:
         ty = a.get("type")
         if ty == "spin":

@@ -215,6 +215,23 @@ def main():
     assert r["ok"] and abs(r["ranges"][0]["stroke"][0] - want) < 0.3, (r, want)
     r = motion(ssrc % 24, sa, "mo_s_short")
     assert any("探到外面" in x and "Slider" in x for x in r["warnings"]) or any("离开" in x for x in r["problems"]), r
+    # 对好齿以后又把其中一个挪走：构建时报「没咬上」，网页检查报「各转各的」
+    msrc = ("from qblib import *\nw = part(worm(2, 60), 'W'); rot(w, 0, 90, 0); at(w, -30, 0, 40)\n"
+            "g = part(worm_wheel(2, 30, 14), 'G'); mesh_worm(g, w)\n%sbase = part(at(box(80, 90, 4), 0, 20, -4), 'Base')\n"
+            "allow_float(base); allow_float(w); allow_float(g)\n")
+    r = build(cfg, msrc % "", "mesh_ok")
+    assert r.get("ok") and not r["issues"], r["issues"]
+    r = build(cfg, msrc % "move(g, 0, 0, -30)\n", "mesh_moved")
+    assert any("没咬上" in x and "mesh_worm" in x and "G" in x for x in r["issues"]), r["issues"]
+    d = os.path.join(tempfile.gettempdir(), "qb_test_mesh_moved")
+    json.dump({"title": "t", "steps": [{"title": "转", "text": "x", "anim": [
+        {"part": "W", "type": "spin", "axis": "x", "speed": 360}, {"part": "G", "type": "spin", "axis": "z", "speed": -12}]}]},
+        open(os.path.join(d, "demo.json"), "w", encoding="utf-8"), ensure_ascii=False)
+    r = blender.run(cfg, "motion", d)
+    assert not r["ok"] and any("各转各的" in x and "G" in x for x in r["problems"]), r
+    r = build(cfg, "from qblib import *\na = part(spur_gear(2, 20, 10), 'A')\nb = part(spur_gear(2, 40, 10), 'B')\nmesh(b, a)\nmove(b, 5, 0, 0)\n", "mesh_moved2")
+    assert any("没咬上" in x and "mesh" in x for x in r["issues"]), r["issues"]
+
     # 在动的零件被不透明的零件挡住，看不到它动
     vsrc = ("from qblib import *\ncyl = part(tube(30, 22, 30), 'Cyl')\nmat(cyl, 'steel')\npis = part(at(cylinder(21.6, 14), 0, 0, 8), 'Piston')\n"
             "cap = part(at(cylinder(30, 3), 0, 0, 30), 'Cap')\nfloor = part(at(box(40, 40, 3), 0, 0, -3), 'Floor')\n")

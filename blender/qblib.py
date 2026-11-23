@@ -40,6 +40,7 @@ __all__ = [
 # ---------------------------------------------------------------- 内部工具
 
 _counter = {}
+_MESHES = []      # mesh / mesh_worm 对过齿的零件对，构建完会核对它们是不是还咬着
 
 
 def _auto_name(base):
@@ -987,12 +988,14 @@ def mesh(g, ref, angle=0):
         al2 = math.atan2(d.y, d.x)
         set_spin(g, al2 + (zr / zg) * (phi_r - al2))
     _update()
+    _MESHES.append((g, ref, "mesh"))
     return g
 
 
 def mesh_worm(wheel, worm_obj, side="+y"):
     """把蜗轮摆到蜗杆旁边并对好齿。要求：蜗杆已经放平，轴线沿 X（rot(worm, 0, 90, 0) 之后）；蜗轮轴线竖直。
-    side 是蜗轮在蜗杆的哪一侧：'+y' 或 '-y'。蜗轮的齿宽中面会对准蜗杆轴线的高度。蜗杆的位置不动。"""
+    side 是蜗轮在蜗杆的哪一侧：'+y' 或 '-y'。蜗轮的齿宽中面会对准蜗杆轴线的高度。蜗杆的位置不动。
+    对好以后蜗轮和蜗杆在同一个高度上咬在一起，不要再单独挪蜗轮；要调高度就在调用它之前把蜗杆放到想要的高度。"""
     if wheel.get("qb_kind") != "worm_wheel" or worm_obj.get("qb_kind") != "worm":
         raise ValueError("mesh_worm(蜗轮, 蜗杆)：第一个要是 worm_wheel() 做的，第二个要是 worm() 做的")
     if abs(wheel["qb_module"] - worm_obj["qb_module"]) > 1e-6 or wheel["qb_starts"] != worm_obj["qb_starts"]:
@@ -1033,6 +1036,7 @@ def mesh_worm(wheel, worm_obj, side="+y"):
     _update()
     if best[0] > 0.05:
         raise ValueError("mesh_worm：怎么转都还扎进去 %.2f mm，蜗轮和蜗杆的参数配不上" % best[0])
+    _MESHES.append((wheel, worm_obj, "mesh_worm"))
     return wheel
 
 
